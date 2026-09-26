@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "timezone": "Europe/Berlin",
+  "schedule": ["before 6am on monday"],
+  "semanticCommits": "enabled",
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "One weekly PR for routine updates. Majors stay separate: they are the ones that break.",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
+      "groupName": "weekly dependencies"
+    },
+    {
+      "description": "Patch and digest updates merge themselves once CI passes; minor and major wait for a human.",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Pin Dockerfile images by digest, so a rebuild cannot silently pull different layers.",
+      "matchManagers": ["dockerfile"],
+      "pinDigests": true
+    },
+    {
+      "description": "Only patch releases and digest updates of Python 3.12. A Python version bump is a deliberate change, not a weekly update.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["python"],
+      "allowedVersions": "/^3\\.12(\\.\\d+)?-slim$/"
+    }
+  ]
+}

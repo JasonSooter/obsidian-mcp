@@ -1,0 +1,10 @@
+# Vault content, journal, and the Quartz checkout must never be baked into an
+# image -- they are bind-mounted at run time.
+vaults/
+state/
+quartz/
+secrets.env
+
+.venv/
+__pycache__/
+*.pyc

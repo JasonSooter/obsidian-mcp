@@ -1,0 +1,37 @@
+[project]
+name = "obsidian-mcp"
+version = "0.1.0"
+description = "MCP server exposing an Obsidian vault over Streamable HTTP"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2.1.1",
+    "uvicorn>=0.34",
+    # Frontmatter parsing. We do NOT use its file IO -- every read and write in
+    # this server goes through vault.py, which is the only module allowed to
+    # touch the filesystem. Only loads()/dumps() are used.
+    "python-frontmatter>=1.1",
+    "PyYAML>=6.0",
+    # Telemetry ships logs over OTLP (e.g. to Grafana Cloud).
+    # Optional at runtime: with no OTEL_EXPORTER_OTLP_ENDPOINT the server logs
+    # to stdout and serves normally.
+    "opentelemetry-sdk>=1.30",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/obsidian_mcp"]
+
+[dependency-groups]
+# Not installed into the image: the Dockerfile installs the project itself, so
+# test-only dependencies stay out of the runtime.
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
