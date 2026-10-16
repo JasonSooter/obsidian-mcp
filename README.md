@@ -474,7 +474,7 @@ the situation the journal exists to prevent.
 ## Development
 
 ```bash
-uv sync                 # Python 3.12, from .python-version and uv.lock
+uv sync                 # Python 3.14, from .python-version and uv.lock
 uv run pytest
 docker build -t obsidian-mcp --build-arg GIT_REVISION=$(git rev-parse HEAD) .
 ```

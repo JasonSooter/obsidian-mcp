@@ -1,4 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>JasonSooter/renovate-config"]
+  "extends": ["local>JasonSooter/renovate-config"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Patch and digest updates merge themselves once CI passes; minor and major wait for a human.",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Hold Python on 3.14: patch releases and digest updates only, for both the Docker base image and .python-version. Moving to a new Python is a deliberate change, not a weekly update.",
+      "matchPackageNames": ["python"],
+      "allowedVersions": "/^3\\.14(\\.\\d+)?(-slim)?$/"
+    }
+  ]
 }

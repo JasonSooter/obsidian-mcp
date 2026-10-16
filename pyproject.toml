@@ -2,7 +2,7 @@
 name = "obsidian-mcp"
 version = "0.1.0"
 description = "MCP server exposing an Obsidian vault over Streamable HTTP"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "mcp>=2.1.1",
     "uvicorn>=0.34",
