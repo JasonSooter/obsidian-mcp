@@ -2,8 +2,10 @@
 # server reads and writes the markdown files directly, which is the only thing
 # that works on a headless server. (Obsidian's official CLI, and the Quartz Syncer
 # plugin's CLI, both require a *running* Obsidian app -- see README.)
-# Pinned by digest; Renovate proposes digest updates weekly (renovate.json).
-FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
+# Pinned by digest. Renovate proposes digest updates weekly: the shared preset
+# (JasonSooter/renovate-config) pins and groups them, and renovate.json holds
+# this image on Python 3.14.
+FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 # No Node. Optional Quartz publishing assumes the site builds on its host
 # (Vercel, Netlify, GitHub Pages...) when pushed, so building it here would only
