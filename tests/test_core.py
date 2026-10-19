@@ -980,3 +980,59 @@ def test_quartz_publishing_is_off_unless_enabled(monkeypatch: pytest.MonkeyPatch
     assert load().quartz is None
     monkeypatch.setenv("QUARTZ_ENABLED", "true")
     assert load().quartz is not None
+
+
+# -- publisher git sync -------------------------------------------------------
+# The site repo has other writers (Quartz Syncer, code PRs). A stale tree once
+# left an unpushed commit that wedged every later publish ("already matches").
+
+
+def _git(cwd: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_sync_with_remote_discards_stale_local_commits(tmp_path: Path) -> None:
+    from obsidian_mcp.config import QuartzConfig
+    from obsidian_mcp.quartz import Publisher
+
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    seed = tmp_path / "seed"
+    _git(tmp_path, "clone", "-q", str(origin), str(seed))
+    for repo in (seed,):
+        _git(repo, "config", "user.email", "t@t")
+        _git(repo, "config", "user.name", "t")
+    (seed / "content").mkdir()
+    (seed / "content" / "a.md").write_text("a\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-q", "-m", "seed")
+    _git(seed, "push", "-q", "origin", "HEAD:main")
+
+    site = tmp_path / "site"
+    _git(tmp_path, "clone", "-q", str(origin), str(site))
+    _git(site, "config", "user.email", "t@t")
+    _git(site, "config", "user.name", "t")
+    # The publisher's own commit that never got pushed...
+    (site / "content" / "stale.md").write_text("stale\n")
+    _git(site, "add", ".")
+    _git(site, "commit", "-q", "-m", "unpushed publish")
+    # ...an untracked leftover...
+    (site / "content" / "leftover.md").write_text("x\n")
+    # ...while another writer moved the remote on.
+    (seed / "content" / "b.md").write_text("b\n")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-q", "-m", "syncer")
+    _git(seed, "push", "-q", "origin", "HEAD:main")
+
+    config = QuartzConfig(
+        repo_path=site, remote="origin", branch="main",
+        ssh_key_path=None, git_author="t <t@t>", build_locally=False,
+    )
+    Publisher(config, tmp_path / "locks").sync_with_remote()
+
+    assert _git(site, "rev-parse", "HEAD") == _git(seed, "rev-parse", "HEAD")
+    assert sorted(p.name for p in (site / "content").iterdir()) == ["a.md", "b.md"]
