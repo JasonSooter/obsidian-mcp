@@ -24,6 +24,7 @@ import re
 import os
 import shutil
 import subprocess
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -335,9 +336,13 @@ class Publisher:
         against when it was last edited is immune to that -- whoever published
         last set the commit time, whatever formatting they used.
         """
+        # core.quotepath=off: by default git prints non-ASCII paths quoted and
+        # octal-escaped ("content/G\303\266rlitz.md"), which never matched,
+        # so every note with an accented name fell back to a byte comparison
+        # and was rewritten on every publish.
         result = subprocess.run(
-            ["git", "log", "--format=%ct", "--name-only", "--no-merges",
-             "--", CONTENT_SUBDIR],
+            ["git", "-c", "core.quotepath=off", "log", "--format=%ct",
+             "--name-only", "--no-merges", "--", CONTENT_SUBDIR],
             cwd=self._config.repo_path, capture_output=True, text=True,
             timeout=GIT_TIMEOUT_SECONDS, check=False,
         )
@@ -351,7 +356,9 @@ class Publisher:
                 stamp = float(line)
             elif line.startswith(CONTENT_SUBDIR + "/"):
                 # First mention wins: git log is newest-first.
-                when.setdefault(line[len(CONTENT_SUBDIR) + 1 :], stamp)
+                # NFC, as the vault's paths are compared in that form.
+                rel = unicodedata.normalize("NFC", line[len(CONTENT_SUBDIR) + 1 :])
+                when.setdefault(rel, stamp)
         return when
 
     def stage(self, vault: Vault, published: dict[str, tuple[str, float]]) -> PublishPlan:
@@ -373,7 +380,7 @@ class Publisher:
             # Unchanged since it was last published, by anyone: leave it alone.
             # A small grace window absorbs the gap between a file being written
             # and the commit that published it.
-            was = last_published.get(rel)
+            was = last_published.get(unicodedata.normalize("NFC", rel))
             if was is not None and mtime <= was + PUBLISH_GRACE_SECONDS:
                 continue
             target = self.content_dir / rel
