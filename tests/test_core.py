@@ -1036,3 +1036,32 @@ def test_sync_with_remote_discards_stale_local_commits(tmp_path: Path) -> None:
 
     assert _git(site, "rev-parse", "HEAD") == _git(seed, "rev-parse", "HEAD")
     assert sorted(p.name for p in (site / "content").iterdir()) == ["a.md", "b.md"]
+
+
+def test_published_at_reads_non_ascii_paths(tmp_path: Path) -> None:
+    """git quotes non-ASCII paths by default; they must still be found, in NFC."""
+    import unicodedata
+
+    from obsidian_mcp.config import QuartzConfig
+    from obsidian_mcp.quartz import Publisher
+
+    repo = tmp_path / "site"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    places = repo / "content" / "Places"
+    places.mkdir(parents=True)
+    (places / "Görlitz.md").write_text("x\n")
+    (places / "Plain.md").write_text("y\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "publish")
+
+    config = QuartzConfig(
+        repo_path=repo, remote="origin", branch="main",
+        ssh_key_path=None, git_author="t <t@t>", build_locally=False,
+    )
+    when = Publisher(config, tmp_path / "locks").published_at()
+
+    assert unicodedata.normalize("NFC", "Places/Görlitz.md") in when
+    assert "Places/Plain.md" in when
