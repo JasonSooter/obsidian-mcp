@@ -473,6 +473,28 @@ class Publisher:
                 f"git {args[0]} timed out after {GIT_TIMEOUT_SECONDS}s."
             ) from None
 
+    def sync_with_remote(self) -> None:
+        """Bring the working tree to the remote branch before staging.
+
+        The site repo has other writers (Quartz Syncer in the Obsidian app, code
+        PRs), so the remote moves between publishes. A push from a stale tree is
+        rejected, and the commit it leaves behind wedges every later run: the
+        next stage diffs against that commit and reports nothing to do. Nothing
+        local is worth keeping -- stage() regenerates content/ from the vault on
+        every run -- so reset to the remote rather than merging.
+        """
+        branch = self._config.branch
+        fetch = self._git("fetch", "--no-tags", self._config.remote, branch)
+        if fetch.returncode != 0:
+            raise ToolError(
+                "Could not fetch the site repo, so nothing was staged or pushed. "
+                "Check the deploy key and network.\n\n" + fetch.stderr.strip()
+            )
+        reset = self._git("reset", "--hard", "FETCH_HEAD")
+        if reset.returncode != 0:
+            raise ToolError(f"git reset failed: {reset.stderr.strip()}")
+        self._git("clean", "-fd", CONTENT_SUBDIR)
+
     def diff_stat(self) -> str:
         result = self._git("status", "--porcelain", CONTENT_SUBDIR)
         return result.stdout.strip()
@@ -494,12 +516,13 @@ class Publisher:
 
         push = self._git("push", self._config.remote, f"HEAD:{self._config.branch}")
         if push.returncode != 0:
-            # The commit exists locally; only the push failed. Say so, because
-            # the recovery is different from 'nothing happened'.
+            # The commit exists locally; the next publish discards it when it
+            # syncs with the remote, so a rejected push can simply be retried.
             raise ToolError(
-                "The commit was created locally but the push failed, so the "
-                "site is unchanged. Check the deploy key and network.\n\n"
-                + push.stderr.strip()
+                "The push failed, so the site is unchanged. If the remote moved "
+                "meanwhile (rejected, non-fast-forward), publish again: each "
+                "publish first resets to the remote. Otherwise check the deploy "
+                "key and network.\n\n" + push.stderr.strip()
             )
 
         sha = self._git("rev-parse", "HEAD").stdout.strip()

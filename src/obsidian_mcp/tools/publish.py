@@ -162,6 +162,9 @@ def register(mcp: MCPServer, ctx: Context) -> None:
         target = ctx.vault(vault)
 
         with publisher.lock():
+            # Start from what's live, or a stale tree makes the diff (and the
+            # push) wrong. Dry runs too, so they report what a publish would do.
+            publisher.sync_with_remote()
             published = _collect_published(target)
             plan = publisher.stage(target, published)
 
