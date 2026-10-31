@@ -25,6 +25,12 @@ from .errors import PathRejected, VaultUnknown
 # sidecar happens to drop into the vault directory.
 ALLOWED_EXTENSIONS = frozenset({".md", ".markdown", ".txt", ".canvas"})
 
+# Binary attachments: reachable only through resolve_attachment(), which also
+# confines them to the configured attachment folders. Kept separate from
+# ALLOWED_EXTENSIONS so no text tool can be pointed at an image, and no image
+# tool at a note.
+ATTACHMENT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif"})
+
 # Never readable, listable, or searchable. `.obsidian/` holds plugin state and
 # plausibly plugin API keys; it is machinery, not knowledge base. `.trash/` is
 # excluded from listings so deleted notes do not come back as search hits, but
@@ -51,6 +57,47 @@ class Vault:
         or touches an excluded directory. This is the only way to turn a string
         from the wire into a path this server will open.
         """
+        return self._resolve(rel, must_exist=must_exist, extensions=ALLOWED_EXTENSIONS)
+
+    def resolve_attachment(
+        self, rel: str, *, must_exist: bool, folders: tuple[str, ...]
+    ) -> Path:
+        """resolve() for a binary attachment, confined to ``folders``.
+
+        Same containment and symlink rules as notes, plus two more: the path
+        must sit under one of the configured attachment folders, and -- for a
+        file being created -- no component may differ only in case from an
+        existing sibling. Linux would happily create `attachments/` beside
+        `Attachments/`; Dropbox on a case-insensitive Mac then fails the whole
+        sync on the collision.
+        """
+        resolved = self._resolve(
+            rel, must_exist=must_exist, extensions=ATTACHMENT_EXTENSIONS
+        )
+        parts = resolved.relative_to(self.root).parts
+        if not any(self._under(parts, folder) for folder in folders):
+            allowed = ", ".join(f"{f}/" for f in folders) or "(none configured)"
+            raise PathRejected(
+                f"Refusing {rel!r}: attachments may only live under {allowed}."
+            )
+        if not must_exist:
+            self._assert_no_case_collision(resolved, rel)
+        return resolved
+
+    def resolve_any_attachment(self, rel: str) -> Path:
+        """An existing attachment anywhere in the vault, for publishing only.
+
+        publish_site copies whatever image a published note embeds, wherever it
+        lives, so this skips the folder allow-list that guards the write tools.
+        Containment and symlink rules still apply.
+        """
+        return self._resolve(rel, must_exist=True, extensions=ATTACHMENT_EXTENSIONS)
+
+    def is_attachment_path(self, rel: str) -> bool:
+        """Whether ``rel`` names an attachment type (by extension only)."""
+        return Path(rel).suffix.lower() in ATTACHMENT_EXTENSIONS
+
+    def _resolve(self, rel: str, *, must_exist: bool, extensions: frozenset[str]) -> Path:
         if not rel or not rel.strip():
             raise PathRejected("Path is empty. Give a path relative to the vault root.")
         if "\x00" in rel:
@@ -63,10 +110,10 @@ class Vault:
                 "root, e.g. 'Inbox/2026-08-28.md'."
             )
 
-        if candidate.suffix.lower() not in ALLOWED_EXTENSIONS:
+        if candidate.suffix.lower() not in extensions:
             raise PathRejected(
                 f"Refusing to touch {rel!r}: only "
-                f"{', '.join(sorted(ALLOWED_EXTENSIONS))} files are accessible."
+                f"{', '.join(sorted(extensions))} files are accessible here."
             )
 
         joined = self.root / candidate
@@ -115,7 +162,57 @@ class Vault:
         """Vault-relative POSIX string for a resolved path. For output only."""
         return path.relative_to(self.root).as_posix()
 
+    def resolve_attachment_dir(self, rel: str | None, *, folders: tuple[str, ...]) -> list[Path]:
+        """Folders an attachment listing may walk: ``rel``, or every allowed one."""
+        if rel is None or not rel.strip() or rel.strip() in {".", "/"}:
+            return [
+                path for folder in folders
+                if (path := (self.root / folder).resolve()).is_dir()
+                and self._contained(path)
+            ]
+        resolved = self.resolve_dir(rel)
+        parts = resolved.relative_to(self.root).parts
+        if not any(self._under(parts, folder) for folder in folders):
+            allowed = ", ".join(f"{f}/" for f in folders) or "(none configured)"
+            raise PathRejected(f"Folder {rel!r} is not under {allowed}.")
+        return [resolved]
+
     # -- internals ---------------------------------------------------------
+
+    @staticmethod
+    def _under(parts: tuple[str, ...], folder: str) -> bool:
+        prefix = Path(folder).parts
+        return len(parts) > len(prefix) and parts[: len(prefix)] == prefix
+
+    def _contained(self, path: Path) -> bool:
+        try:
+            path.relative_to(self.root)
+        except ValueError:
+            return False
+        return True
+
+    def _assert_no_case_collision(self, resolved: Path, original: str) -> None:
+        # Compares directory entries by name rather than asking exists(): on a
+        # case-insensitive filesystem (macOS) exists() says yes to the wrong
+        # spelling, which would hide exactly the twin this guards against.
+        current = self.root
+        for part in resolved.relative_to(self.root).parts:
+            if not current.is_dir():
+                break
+            clash = next(
+                (
+                    entry.name for entry in current.iterdir()
+                    if entry.name.lower() == part.lower() and entry.name != part
+                ),
+                None,
+            )
+            if clash is not None:
+                raise PathRejected(
+                    f"Refusing {original!r}: {clash!r} already exists and differs "
+                    f"only in case from {part!r}. Use the existing spelling -- a "
+                    "case-only twin breaks Dropbox sync on macOS."
+                )
+            current = current / part
 
     def _assert_contained(self, resolved: Path, original: str) -> None:
         try:
@@ -160,6 +257,16 @@ class Vault:
             )
         return path.read_text(encoding="utf-8", errors="replace")
 
+    def read_bytes(self, path: Path, *, max_bytes: int) -> bytes:
+        """read_text() for binary attachments: fresh from disk, size-capped."""
+        size = path.stat().st_size
+        if size > max_bytes:
+            raise PathRejected(
+                f"{self.relative(path)} is {size} bytes, over the "
+                f"{max_bytes}-byte limit. Refusing to load it."
+            )
+        return path.read_bytes()
+
     def write_text_atomic(self, path: Path, content: str) -> None:
         """Replace a file's contents atomically.
 
@@ -171,14 +278,22 @@ class Vault:
         which sees a delete plus a create rather than a modify -- see the README
         note about conflicted copies.
         """
+        self.write_bytes_atomic(path, content.encode("utf-8"), temp_suffix=".md")
+
+    def write_bytes_atomic(self, path: Path, data: bytes, *, temp_suffix: str = ".tmp") -> None:
+        """write_text_atomic() for raw bytes. Dropbox never sees a partial file.
+
+        Attachments use a neutral ``.tmp`` suffix so Obsidian does not index
+        the in-flight file as an image during the instant it exists.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_name = tempfile.mkstemp(
-            dir=path.parent, prefix=TEMP_PREFIX, suffix=".md"
+            dir=path.parent, prefix=TEMP_PREFIX, suffix=temp_suffix
         )
         tmp = Path(tmp_name)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(content)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp, path)
@@ -186,12 +301,19 @@ class Vault:
             tmp.unlink(missing_ok=True)
             raise
 
+    def iter_attachments(self, start: Path | None = None):
+        """iter_notes() for attachment types."""
+        yield from self._iter(start, ATTACHMENT_EXTENSIONS)
+
     def iter_notes(self, start: Path | None = None):
         """Yield every allowed note under ``start``, skipping excluded dirs.
 
         Prunes excluded directories during the walk rather than filtering
         afterwards, so we never even stat inside `.obsidian/`.
         """
+        yield from self._iter(start, ALLOWED_EXTENSIONS)
+
+    def _iter(self, start: Path | None, extensions: frozenset[str]):
         root = start or self.root
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [
@@ -201,7 +323,7 @@ class Vault:
             for filename in filenames:
                 if filename.startswith(TEMP_PREFIX):
                     continue
-                if Path(filename).suffix.lower() in ALLOWED_EXTENSIONS:
+                if Path(filename).suffix.lower() in extensions:
                     yield Path(dirpath) / filename
 
 

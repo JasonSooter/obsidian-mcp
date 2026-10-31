@@ -22,15 +22,16 @@ def register(mcp: MCPServer, ctx: Context) -> None:
     async def list_versions(
         path: str, vault: str | None = None, limit: int = 50
     ) -> dict[str, Any]:
-        """List saved versions of a note, newest first.
+        """List saved versions of a note or attachment, newest first.
 
-        A version is written before every append, edit, overwrite, and delete.
-        The note itself does not need to still exist -- use this to find a
+        A version is written before every append, edit, overwrite, and delete
+        -- including vault_write_attachment overwrites and attachment deletes.
+        The file itself does not need to still exist -- use this to find a
         deleted note's contents.
         """
         target = ctx.vault(vault)
         # must_exist=False: the whole point is that this works after a delete.
-        resolved = target.resolve(path, must_exist=False)
+        resolved, _ = ctx.resolve_any(target, path, must_exist=False)
         rel = target.relative(resolved)
         versions = ctx.journal.list_versions(target, rel, limit=clamp(limit, MAX_LIST_LIMIT))
         return {
@@ -46,18 +47,19 @@ def register(mcp: MCPServer, ctx: Context) -> None:
     async def restore_version(
         path: str, version_id: str, vault: str | None = None
     ) -> dict[str, Any]:
-        """Restore a note to a previous version.
+        """Restore a note or attachment to a previous version.
 
         Get `version_id` from list_versions. The current contents are
         snapshotted first, so a restore is itself undoable -- you can undo an
-        undo. Works on a note that was deleted, recreating it at `path`.
+        undo. Works on a file that was deleted, recreating it at `path`.
+        Attachments are restored byte-exact.
         """
         target = ctx.vault(vault)
-        resolved = target.resolve(path, must_exist=False)
+        resolved, is_attachment = ctx.resolve_any(target, path, must_exist=False)
         rel = target.relative(resolved)
 
         try:
-            content = ctx.journal.read_version(target, rel, version_id)
+            content = ctx.journal.read_version_bytes(target, rel, version_id)
         except FileNotFoundError:
             raise ToolError(
                 f"No version {version_id!r} for {rel!r}. Call list_versions to "
@@ -67,7 +69,12 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             raise ToolError(str(exc)) from None
 
         new_version_id = ctx.journal.snapshot(target, resolved, op="restore")
-        target.write_text_atomic(resolved, content)
+        if is_attachment:
+            target.write_bytes_atomic(resolved, content)
+        else:
+            target.write_text_atomic(
+                resolved, content.decode("utf-8", errors="replace")
+            )
 
         ctx.journal.record(
             tool="restore_version",

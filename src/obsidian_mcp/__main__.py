@@ -19,6 +19,7 @@ from .config import ConfigError, load
 from .oauth.totp import InvalidTOTPSecret
 from .journal import Journal
 from .quartz import Publisher
+from .render import PngRenderer
 from .server import build
 from .tools._common import Context
 from .vault import build_registry
@@ -92,7 +93,9 @@ def main() -> int:
                 quartz.ssh_key_path,
             )
             return 5
-        publisher = Publisher(quartz, config.state_dir)
+        publisher = Publisher(
+            quartz, config.state_dir, PngRenderer(config.png_cache_dir)
+        )
 
     ctx = Context(
         config=config, vaults=vaults, journal=journal, publisher=publisher

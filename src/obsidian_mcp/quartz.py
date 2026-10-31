@@ -25,16 +25,26 @@ import os
 import shutil
 import subprocess
 import unicodedata
+from urllib.parse import quote
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from datetime import datetime, timezone
 
+from . import attachments as att
 from .config import QuartzConfig
 from .errors import ToolError
 from .notes import compose, parse
-from .vault import Vault
+from .render import PngRenderer
+from .site_assets import (
+    AttachmentIndex,
+    collect_references,
+    png_sibling,
+    site_path,
+    slugify_path,
+)
+from .vault import ATTACHMENT_EXTENSIONS, Vault
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +64,14 @@ LOCK_FILENAME = "quartz-publish.lock"
 # already published. The plugin writes the file, then commits a moment later,
 # so an exact comparison would republish everything it just published.
 PUBLISH_GRACE_SECONDS = 900
+
+# Where `npx quartz build` writes the site.
+BUILD_OUTPUT_SUBDIR = "public"
+
+# Attachments larger than this are reported and left as they are on the site.
+# Far above the 2 MB the write tool accepts: the site already serves photos and
+# GIFs of several MB, published by Quartz Syncer.
+PUBLISH_MAX_ATTACHMENT_BYTES = 20_000_000
 
 
 def is_published(raw: str) -> bool:
@@ -253,16 +271,65 @@ def render_for_publish(raw: str, mtime: float, content_path: Path) -> str:
 
 
 @dataclass
+class AttachmentPlan:
+    """What publish_site does to the site's images. Paths are vault-relative."""
+
+    added: list[str] = field(default_factory=list)
+    updated: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    # Referenced by a published note, but not in the vault.
+    missing: list[dict] = field(default_factory=list)
+    # In the vault, but not published: unsafe SVG, wrong bytes, too large.
+    rejected: list[dict] = field(default_factory=list)
+    # Unreferenced by our resolution, yet named in a published page's markdown,
+    # so left in place rather than risk breaking it.
+    kept: list[str] = field(default_factory=list)
+    png_rendered: int = 0
+    png_cached: int = 0
+    png_failed: list[dict] = field(default_factory=list)
+    # Site files expected after the build, content path -> built path.
+    outputs: dict[str, str] = field(default_factory=dict)
+    # Set after a local build: staged files the build did not emit.
+    not_in_build: list[str] | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.added or self.updated or self.removed)
+
+    def as_dict(self) -> dict:
+        out: dict = {
+            "added": sorted(self.added),
+            "updated": sorted(self.updated),
+            "removed": sorted(self.removed),
+            "missing": sorted(self.missing, key=lambda m: (m["note"], m["reference"])),
+            "total_changes": len(self.added) + len(self.updated) + len(self.removed),
+            "png": {
+                "rendered": self.png_rendered,
+                "cached": self.png_cached,
+                "failed": self.png_failed,
+            },
+        }
+        if self.rejected:
+            out["rejected"] = sorted(self.rejected, key=lambda r: r["path"])
+        if self.kept:
+            out["kept_unreferenced"] = sorted(self.kept)
+        if self.not_in_build is not None:
+            out["not_in_build"] = sorted(self.not_in_build)
+        return out
+
+
+@dataclass
 class PublishPlan:
     added: list[str]
     updated: list[str]
     removed: list[str]
     # Notes we deliberately did not touch -- see DYNAMIC_BLOCK.
     skipped: list[str] = field(default_factory=list)
+    attachments: AttachmentPlan = field(default_factory=AttachmentPlan)
 
     @property
     def is_empty(self) -> bool:
-        return not (self.added or self.updated or self.removed)
+        return not (self.added or self.updated or self.removed) and self.attachments.is_empty
 
     def as_dict(self) -> dict:
         out = {
@@ -270,6 +337,7 @@ class PublishPlan:
             "updated": sorted(self.updated),
             "removed": sorted(self.removed),
             "total_changes": len(self.added) + len(self.updated) + len(self.removed),
+            "attachments": self.attachments.as_dict(),
         }
         if self.skipped:
             out["skipped"] = sorted(self.skipped)
@@ -287,9 +355,15 @@ class PublishPlan:
 class Publisher:
     """Owns the Quartz repo working tree."""
 
-    def __init__(self, config: QuartzConfig, lock_dir: Path) -> None:
+    def __init__(
+        self,
+        config: QuartzConfig,
+        lock_dir: Path,
+        renderer: PngRenderer | None = None,
+    ) -> None:
         self._config = config
         self._lock_dir = lock_dir
+        self._renderer = renderer or PngRenderer(lock_dir / "png-cache")
 
     @property
     def content_dir(self) -> Path:
@@ -383,7 +457,9 @@ class Publisher:
             was = last_published.get(unicodedata.normalize("NFC", rel))
             if was is not None and mtime <= was + PUBLISH_GRACE_SECONDS:
                 continue
-            target = self.content_dir / rel
+            # NFC, git's form: a decomposed name from a macOS-synced vault
+            # would otherwise be a second file beside the published one.
+            target = self.content_dir / site_path(rel)
             target.parent.mkdir(parents=True, exist_ok=True)
             rendered = render_for_publish(content, mtime, target)
             if not target.exists():
@@ -395,13 +471,160 @@ class Publisher:
             target.write_text(rendered, encoding="utf-8")
 
         # Sweep: previously published notes that are no longer flagged.
+        # Compared in NFC: on macOS the vault walk can return decomposed names
+        # while git's are composed, which removed every accented note.
+        flagged = {site_path(rel) for rel in published}
         for existing in self.content_dir.rglob("*.md"):
             rel = existing.relative_to(self.content_dir).as_posix()
-            if rel not in published:
+            if site_path(rel) not in flagged:
                 existing.unlink()
                 plan.removed.append(rel)
 
         return plan
+
+    def stage_attachments(
+        self, vault: Vault, published: dict[str, tuple[str, float]]
+    ) -> AttachmentPlan:
+        """Mirror the images published notes use, plus PNGs of their SVG heroes.
+
+        Run after stage(), whose sweep has already dropped unpublished notes'
+        markdown. Each referenced file lands at its vault-relative path under
+        content/ (Quartz serves it at the slugified path, e.g.
+        content/Attachments/Places/Vauban.svg -> /attachments/places/vauban.svg).
+        Files are compared by SHA-256, so an unchanged image is never rewritten
+        and git sees no change.
+
+        Every published note counts, including ones stage() skipped for
+        dataview blocks: those stay on the site, so their images must too.
+        """
+        plan = AttachmentPlan()
+        index = AttachmentIndex(vault)
+
+        # Site path (NFC, as git and the notes spell it) -> on-disk vault path.
+        wanted: dict[str, str] = {}
+        page_svgs: set[str] = set()
+        for note_rel, (raw, _mtime) in published.items():
+            for ref in collect_references(raw):
+                hit = index.resolve(ref.target, source=note_rel)
+                if hit is None:
+                    plan.missing.append(
+                        {"note": site_path(note_rel), "reference": ref.target}
+                    )
+                    continue
+                rel = site_path(hit)
+                wanted[rel] = hit
+                if ref.is_page_image and rel.lower().endswith(".svg"):
+                    page_svgs.add(rel)
+
+        expected: set[str] = set(wanted)
+        svg_bytes: dict[str, bytes] = {}
+        for rel in sorted(wanted):
+            data = self._load_attachment(vault, wanted[rel], rel, plan)
+            if data is None:
+                page_svgs.discard(rel)
+                continue
+            if rel in page_svgs:
+                svg_bytes[rel] = data
+            self._write_if_changed(rel, data, plan)
+
+        # Link-preview PNGs for SVG page images. A PNG the vault itself holds
+        # at that path, and that a note references, wins over a rendered one.
+        to_render = {
+            png_sibling(svg): data
+            for svg, data in svg_bytes.items()
+            if png_sibling(svg) not in wanted
+        }
+        result = self._renderer.render_all(to_render)
+        plan.png_rendered, plan.png_cached = result.rendered, result.cached
+        for png_rel, reason in sorted(result.failed.items()):
+            plan.png_failed.append({"path": png_rel, "reason": reason})
+        for png_rel, key in result.keys.items():
+            expected.add(png_rel)
+            self._write_if_changed(png_rel, self._renderer.read(key), plan)
+        self._renderer.prune(set(result.keys.values()))
+
+        # Rejected files stay as they are on the site: not updated, not removed.
+        expected |= {r["path"] for r in plan.rejected}
+        self._sweep_attachments(expected, plan)
+
+        plan.outputs = {
+            rel: f"{BUILD_OUTPUT_SUBDIR}/{slugify_path(rel)}"
+            for rel in expected
+            if (self.content_dir / rel).is_file()
+        }
+        return plan
+
+    def _load_attachment(
+        self, vault: Vault, disk_rel: str, rel: str, plan: AttachmentPlan
+    ) -> bytes | None:
+        """The vault file's bytes, or None (recorded as rejected) if unpublishable."""
+        try:
+            path = vault.resolve_any_attachment(disk_rel)
+            data = vault.read_bytes(path, max_bytes=PUBLISH_MAX_ATTACHMENT_BYTES)
+            # The site serves these from its own origin. An SVG with script in
+            # it would be stored XSS, and resvg would follow an <image href> to
+            # a local file -- so vault files get the same check as uploads.
+            att.validate(data, path.suffix)
+        except (ToolError, OSError) as exc:
+            plan.rejected.append({"path": rel, "reason": str(exc)[:300]})
+            return None
+        return data
+
+    def _write_if_changed(self, rel: str, data: bytes, plan: AttachmentPlan) -> None:
+        target = self.content_dir / rel
+        if target.is_file():
+            if att.sha256(target.read_bytes()) == att.sha256(data):
+                return
+            plan.updated.append(rel)
+        else:
+            plan.added.append(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    def _sweep_attachments(self, expected: set[str], plan: AttachmentPlan) -> None:
+        """Remove site images that no published note uses any more.
+
+        Conservative on purpose. Quartz Syncer publishes attachments into the
+        same folder, and a page can name an image in ways this server does not
+        parse (HTML <img>, a frontmatter key outside IMAGE_KEYS). So a file is
+        removed only if no published page's markdown mentions its filename at
+        all; otherwise it is kept and listed under kept_unreferenced.
+        """
+        wanted = {unicodedata.normalize("NFC", rel) for rel in expected}
+        candidates = []
+        for path in self.content_dir.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in ATTACHMENT_EXTENSIONS:
+                continue
+            rel = path.relative_to(self.content_dir).as_posix()
+            if unicodedata.normalize("NFC", rel) not in wanted:
+                candidates.append((rel, path))
+        if not candidates:
+            return
+
+        corpus = unicodedata.normalize(
+            "NFC",
+            "\n".join(
+                md.read_text(encoding="utf-8", errors="replace")
+                for md in self.content_dir.rglob("*.md")
+            ),
+        ).lower()
+        for rel, path in sorted(candidates):
+            name = unicodedata.normalize("NFC", path.name).lower()
+            spellings = {name, quote(name), name.replace(" ", "%20")}
+            if any(s in corpus for s in spellings):
+                plan.kept.append(rel)
+                continue
+            path.unlink()
+            plan.removed.append(rel)
+
+    def verify_build_outputs(self, plan: AttachmentPlan) -> None:
+        """After a local build: which staged images the site did not emit."""
+        if not self._config.build_locally:
+            return
+        root = self._config.repo_path
+        plan.not_in_build = [
+            rel for rel, built in plan.outputs.items() if not (root / built).is_file()
+        ]
 
     # -- build -------------------------------------------------------------
 

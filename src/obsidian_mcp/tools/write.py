@@ -68,6 +68,25 @@ def _parse_mtime(value: str | int) -> int:
         ) from None
 
 
+def check_mtime(resolved, expected_mtime_ns: str | int, path: str, *, reread: str = "vault_read") -> None:
+    """Raise StaleWrite if ``resolved`` changed since the caller read it.
+
+    Tolerance, not equality. A client that parsed the value as a JSON number
+    has already rounded it -- doubles cannot represent 1.8e18 exactly, and the
+    error is a few hundred nanoseconds. Real edits move mtime by milliseconds
+    at least, so this cannot mask one.
+    """
+    actual = resolved.stat().st_mtime_ns
+    expected = _parse_mtime(expected_mtime_ns)
+    if abs(actual - expected) > MTIME_TOLERANCE_NS:
+        raise StaleWrite(
+            f"{path!r} changed since you read it, so the write was not "
+            "applied -- applying it would have discarded that change. "
+            f"Call {reread} again, rebase your content on the current "
+            "file, and retry."
+        )
+
+
 def register(mcp: MCPServer, ctx: Context) -> None:
     """Attach every mutating tool."""
 
@@ -180,19 +199,7 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             )
 
         if exists and expected_mtime_ns is not None:
-            actual = resolved.stat().st_mtime_ns
-            expected = _parse_mtime(expected_mtime_ns)
-            # Tolerance, not equality. A client that parsed the value as a JSON
-            # number has already rounded it -- doubles cannot represent 1.8e18
-            # exactly, and the error is a few hundred nanoseconds. Real edits
-            # move mtime by milliseconds at least, so this cannot mask one.
-            if abs(actual - expected) > MTIME_TOLERANCE_NS:
-                raise StaleWrite(
-                    f"{path!r} changed since you read it, so the write was not "
-                    "applied -- applying it would have discarded that change. "
-                    "Call vault_read again, rebase your content on the current "
-                    "note, and retry."
-                )
+            check_mtime(resolved, expected_mtime_ns, path)
 
         metadata = frontmatter
         if exists and frontmatter is None:
@@ -422,23 +429,31 @@ def register(mcp: MCPServer, ctx: Context) -> None:
     async def vault_delete(
         path: str, vault: str | None = None, to_trash: bool = True
     ) -> dict[str, Any]:
-        """Delete a note.
+        """Delete a note, or an attachment in an allowed attachment folder.
 
-        By default the note is moved into the vault's `.trash/` folder --
+        By default the file is moved into the vault's `.trash/` folder --
         Obsidian's own convention -- rather than unlinked, so it is recoverable
         from the vault itself and Dropbox replicates the move. A snapshot is also
         written to the version journal first, so the contents survive even with
         to_trash=False.
 
-        Links pointing at the deleted note are left alone; call list_backlinks
+        Attachments (.png .jpg .jpeg .webp .svg .gif) can be deleted only under
+        the attachment folders vault_write_attachment may write to
+        (default `Attachments/`).
+
+        Links pointing at the deleted file are left alone; call list_backlinks
         first if you need to know what will break.
         """
         target = ctx.vault(vault)
-        resolved = target.resolve(path, must_exist=True)
+        resolved, is_attachment = ctx.resolve_any(target, path, must_exist=True)
         rel = target.relative(resolved)
 
         version_id = ctx.journal.snapshot(target, resolved, op="delete")
-        content = ctx.read(target, resolved)
+        content = (
+            ctx.read_attachment(target, resolved)
+            if is_attachment
+            else ctx.read(target, resolved).encode("utf-8")
+        )
 
         trashed_to = None
         if to_trash:
@@ -452,7 +467,9 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             # Write-then-unlink rather than rename: the destination is inside
             # `.trash/`, which vault.resolve() refuses, so this stays on the
             # primitives vault.py exposes instead of reaching around them.
-            target.write_text_atomic(trash_path, content)
+            target.write_bytes_atomic(
+                trash_path, content, temp_suffix=".tmp" if is_attachment else ".md"
+            )
             trashed_to = f".trash/{trash_path.name}"
 
         resolved.unlink()
