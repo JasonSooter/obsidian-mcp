@@ -22,8 +22,12 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.5@sha256:f459f6f73a8c4ef5d69f4e6fbbdb8af751
 
 # ripgrep backs search. git and openssh-client back Quartz publishing
 # (staging content, committing, and pushing to the site repo).
+# fonts-dejavu-core (~3 MB) is the glyph fallback when publish_site renders a
+# hero SVG to PNG: the SVGs' own fonts (Space Grotesk, JetBrains Mono) ship
+# inside the package, but they have no Arabic, Greek-extended, etc., and with
+# no system fonts at all resvg would drop those characters from the image.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ripgrep git openssh-client ca-certificates \
+ && apt-get install -y --no-install-recommends ripgrep git openssh-client ca-certificates fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONUNBUFFERED=1 \

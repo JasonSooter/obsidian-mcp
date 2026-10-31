@@ -25,6 +25,10 @@ MIN_PASSWORD_LENGTH = 12
 # Refuse to read anything pathological into a model's context.
 DEFAULT_MAX_FILE_BYTES = 2_000_000
 
+# Binary attachments (images) may only be written under these vault folders.
+DEFAULT_ATTACHMENT_FOLDERS = ("Attachments",)
+DEFAULT_MAX_ATTACHMENT_BYTES = 2_000_000
+
 
 class ConfigError(RuntimeError):
     """Raised at startup for a config problem that must stop the process."""
@@ -59,6 +63,9 @@ class Config:
     journal_retention_days: int
     environment: str
     quartz: QuartzConfig | None
+    # Vault-relative folders the attachment tools may touch, and their size cap.
+    attachment_folders: tuple[str, ...] = DEFAULT_ATTACHMENT_FOLDERS
+    max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES
 
     @property
     def versions_dir(self) -> Path:
@@ -75,6 +82,11 @@ class Config:
     @property
     def audit_log_path(self) -> Path:
         return self.state_dir / "audit.log"
+
+    @property
+    def png_cache_dir(self) -> Path:
+        """Rendered social PNGs, keyed by SVG hash, so publishes skip re-renders."""
+        return self.state_dir / "png-cache"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -189,4 +201,23 @@ def load() -> Config:
         # Grafana dashboard filters on it.
         environment=_env("OBSIDIAN_MCP_ENV", "production") or "production",
         quartz=quartz,
+        attachment_folders=_attachment_folders(),
+        max_attachment_bytes=_env_int(
+            "OBSIDIAN_MAX_ATTACHMENT_BYTES", DEFAULT_MAX_ATTACHMENT_BYTES
+        ),
     )
+
+
+def _attachment_folders() -> tuple[str, ...]:
+    """OBSIDIAN_ATTACHMENT_FOLDERS: comma-separated vault-relative folders."""
+    raw = _env("OBSIDIAN_ATTACHMENT_FOLDERS")
+    if raw is None:
+        return DEFAULT_ATTACHMENT_FOLDERS
+    folders = tuple(f.strip().strip("/") for f in raw.split(",") if f.strip().strip("/"))
+    for folder in folders:
+        if folder.startswith(".") or ".." in Path(folder).parts or Path(folder).is_absolute():
+            raise ConfigError(
+                f"OBSIDIAN_ATTACHMENT_FOLDERS entry {folder!r} must be a plain "
+                "vault-relative folder such as 'Attachments'."
+            )
+    return folders

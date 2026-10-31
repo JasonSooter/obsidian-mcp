@@ -106,7 +106,13 @@ class Journal:
         return entries
 
     def read_version(self, vault: Vault, rel: str, version_id: str) -> str:
-        """Contents of one snapshot.
+        """Contents of one snapshot, as text (notes)."""
+        return self.read_version_bytes(vault, rel, version_id).decode(
+            "utf-8", errors="replace"
+        )
+
+    def read_version_bytes(self, vault: Vault, rel: str, version_id: str) -> bytes:
+        """Contents of one snapshot, byte-exact (attachments as well as notes).
 
         ``version_id`` is caller-supplied, so it is validated as a bare filename
         -- otherwise it would be a second, unconfined path parameter sitting
@@ -122,7 +128,7 @@ class Journal:
             raise ValueError(f"Invalid version id: {version_id!r}") from None
         if not resolved.is_file():
             raise FileNotFoundError(version_id)
-        return resolved.read_text(encoding="utf-8", errors="replace")
+        return resolved.read_bytes()
 
     def _bucket(self, vault_name: str, rel: str) -> Path:
         """Directory holding every snapshot of one note.

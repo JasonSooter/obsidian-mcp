@@ -104,6 +104,9 @@ main branch, `:sha-<commit>` pins a build. Pin by digest in production.
 | `QUARTZ_GIT_REMOTE` / `QUARTZ_GIT_BRANCH` | `origin` / `main` | Where publishing pushes |
 | `QUARTZ_GIT_AUTHOR` | `obsidian-mcp <obsidian-mcp@localhost>` | Commit author for publishes |
 | `QUARTZ_BUILD_LOCALLY` | `true` | Run `npx quartz build` before pushing. The image has no Node, so set `false` when your host builds on push |
+| `OBSIDIAN_ATTACHMENT_FOLDERS` | `Attachments` | Comma-separated vault folders the attachment tools may write, read, list and delete in |
+| `OBSIDIAN_MAX_ATTACHMENT_BYTES` | `2000000` | Size cap for `vault_write_attachment` / `vault_read_attachment` |
+| `OBSIDIAN_MCP_FONT_DIRS` | unset | Extra font directories (`:`-separated) for rendering hero SVGs to PNG |
 
 **Port 8780, not 8770**, so it can run beside
 [anki-mcp](https://github.com/JasonSooter/anki-mcp) on 8770. Under some Docker
@@ -168,9 +171,12 @@ and habits carry across both servers.
 | `vault_write` | `mode="create"` (default, refuses to clobber) or `"overwrite"`; takes `expected_mtime_ns` |
 | `vault_move` | rename/move, **repointing every backlink** by default |
 | `vault_copy` | duplicate a note; its links are left pointing where they pointed |
-| `vault_delete` | moves to `.trash/`; journalled |
+| `vault_delete` | moves to `.trash/`; journalled. Also deletes attachments in the attachment folders |
+| `vault_write_attachment` | images (`.png .jpg .jpeg .webp .svg .gif`) as base64, under `Attachments/` only; `mode="create"`/`"overwrite"`, `expected_mtime_ns`; bytes checked against the extension, SVGs must be inert |
+| `vault_read_attachment` | `{path, bytes, sha256, mtime_ns, content_type}`, plus `content_base64` with `include_content=True` |
+| `vault_list_attachments` | path, size and mtime of images under the attachment folders |
 | `resolve_links` / `list_backlinks` | wikilink graph, shortest-unique-path resolved |
-| `list_versions` / `restore_version` | undo, including for deleted notes |
+| `list_versions` / `restore_version` | undo, including for deleted notes and overwritten or deleted attachments (byte-exact) |
 | `set_publish_status` / `list_published` / `preview_publish` / `publish_site` | Quartz; only when `QUARTZ_ENABLED=true` |
 
 ### Beyond the plugin-based connector
@@ -335,6 +341,38 @@ generated content with the raw query — visible breakage on the live page.
 
 ```` ```query ```` blocks are *not* skipped: those are Obsidian core search
 blocks, which Syncer passes through verbatim too.
+
+### Images
+
+Attachments travel with the notes that use them. For every published note,
+`publish_site` collects the frontmatter keys `image`, `cover`, `banner` and
+`socialImage` and the embeds `![[x.png]]`, `![[x.png|300]]` and `![](x.png)`,
+resolves them as Obsidian does (exact path, then relative, then shortest unique
+basename), and copies each file to `content/<vault path>` — Quartz serves
+`content/Attachments/Places/Vauban.svg` at `/attachments/places/vauban.svg`.
+
+- **By content hash.** An unchanged image is never rewritten, so git sees no
+  change.
+- **Link-preview PNGs.** Facebook, LinkedIn and X reject SVG `og:image`. An SVG
+  used as a page image gets a 1200×630 PNG beside it (`Vauban.png`), rendered
+  in-process by [resvg](https://github.com/RazrFalcon/resvg) with the SVGs' own
+  fonts (bundled, OFL — see `src/obsidian_mcp/fonts/`). Cached in
+  `/state/png-cache` by SVG hash, so only new or changed SVGs are rendered
+  (~0.3 s each; the first publish of ~300 runs on a small process pool).
+- **Removal.** An image no published note references is removed from the
+  site — unless a published page's markdown still names the file, which covers
+  Quartz Syncer pages using it in a way this server does not parse. Those are
+  listed under `kept_unreferenced`.
+- **Safety.** Vault files get the same checks as uploads: an SVG with script,
+  event handlers or external references is never published (listed under
+  `rejected`), since the site serves it from its own origin.
+- **Reported, never fatal.** `changes.attachments` lists `added`, `updated`,
+  `removed`, `missing` (referenced but not in the vault) and PNG
+  rendered/cached/failed counts. After a local build, `not_in_build` lists any
+  staged image the build did not emit.
+
+The site side — `og:image` pointing at the PNG and a hero banner on the page —
+lives in the site repo's `social-image` and `hero-image` plugins.
 
 ### Setup
 

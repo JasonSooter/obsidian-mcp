@@ -49,6 +49,25 @@ class Context:
         """Read a note fresh. The only read path used by tools."""
         return vault.read_text(path, max_bytes=self.config.max_file_bytes)
 
+    def resolve_attachment(self, vault: Vault, rel: str, *, must_exist: bool) -> Path:
+        return vault.resolve_attachment(
+            rel, must_exist=must_exist, folders=self.config.attachment_folders
+        )
+
+    def read_attachment(self, vault: Vault, path: Path) -> bytes:
+        return vault.read_bytes(path, max_bytes=self.config.max_attachment_bytes)
+
+    def resolve_any(self, vault: Vault, rel: str, *, must_exist: bool) -> tuple[Path, bool]:
+        """A note or an attachment path. Returns (path, is_attachment).
+
+        For the tools that work on both (vault_delete, list_versions,
+        restore_version). The extension decides which confinement applies, so
+        an image never slips through the note rules or vice versa.
+        """
+        if vault.is_attachment_path(rel):
+            return self.resolve_attachment(vault, rel, must_exist=must_exist), True
+        return vault.resolve(rel, must_exist=must_exist), False
+
 
 def clamp(value: int, maximum: int, *, minimum: int = 1) -> int:
     return max(minimum, min(value, maximum))

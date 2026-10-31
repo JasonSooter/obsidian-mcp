@@ -21,7 +21,7 @@ from .oauth.login import register_routes as register_login_routes
 from .oauth.provider import ObsidianOAuthProvider
 from .oauth.store import Store
 from .oauth.totp import normalise_secret
-from .tools import history, publish, read, write
+from .tools import attachments, history, publish, read, write
 from .tools._common import Context
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,11 @@ version, targeting a heading, a ^block-id, or a frontmatter property.
 Every append, patch, write, move and delete saves the previous contents first;
 list_versions and restore_version undo them. vault_delete also moves the note to
 .trash/ rather than destroying it.
+
+Images go through the attachment tools, not vault_write: vault_write_attachment
+(base64 bytes, under Attachments/ by default), vault_read_attachment and
+vault_list_attachments. vault_delete, list_versions and restore_version accept
+attachment paths too.
 """
 
 PUBLISH_INSTRUCTIONS = """\
@@ -105,6 +110,7 @@ def build(config: Config, ctx: Context) -> tuple[MCPServer, Starlette]:
 
     read.register(mcp, ctx)
     write.register(mcp, ctx)
+    attachments.register(mcp, ctx)
     history.register(mcp, ctx)
 
     # Never-registered-never-reachable: with QUARTZ_ENABLED=false the publish

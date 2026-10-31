@@ -151,6 +151,15 @@ def register(mcp: MCPServer, ctx: Context) -> None:
         Stages the `publish: true` notes into the site repo, runs the Quartz
         build as a gate, then commits and pushes.
 
+        Images travel with the notes: every attachment a published note uses
+        (frontmatter image/cover/banner/socialImage, `![[x.png]]` and
+        `![](x.png)` embeds) is copied to the site, compared by SHA-256 so
+        unchanged images are not recommitted. An SVG page image also gets a
+        1200x630 PNG beside it for link previews (cached; only new or changed
+        SVGs are rendered). Images no published note uses any more are removed.
+        The result's `changes.attachments` lists added / updated / removed /
+        missing (referenced but not in the vault -- reported, never fatal).
+
         **dry_run defaults to True**: the first call stages and builds but
         pushes nothing, returning the exact set of additions, updates, and
         removals. Review that, then call again with dry_run=False to publish.
@@ -167,6 +176,11 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             publisher.sync_with_remote()
             published = _collect_published(target)
             plan = publisher.stage(target, published)
+            try:
+                plan.attachments = publisher.stage_attachments(target, published)
+            except BaseException:
+                publisher.revert_staging()
+                raise
 
             if plan.is_empty:
                 publisher.revert_staging()
@@ -176,7 +190,7 @@ def register(mcp: MCPServer, ctx: Context) -> None:
                     "changes": plan.as_dict(),
                     "built": False,
                     "pushed": False,
-                    "detail": "The site already matches the flagged notes.",
+                    "detail": "The site already matches the flagged notes and their images.",
                 }
 
             try:
@@ -186,6 +200,7 @@ def register(mcp: MCPServer, ctx: Context) -> None:
                 # not leave half-staged content for the next call to commit.
                 publisher.revert_staging()
                 raise
+            publisher.verify_build_outputs(plan.attachments)
 
             if dry_run:
                 publisher.revert_staging()
@@ -196,14 +211,16 @@ def register(mcp: MCPServer, ctx: Context) -> None:
                     "built": True,
                     "pushed": False,
                     "detail": (
-                        f"{plan.as_dict()['total_changes']} change(s) staged and "
-                        "the build passed. Nothing was pushed. Call again with "
-                        "dry_run=False to publish."
+                        f"{plan.as_dict()['total_changes']} note change(s) and "
+                        f"{plan.attachments.as_dict()['total_changes']} attachment "
+                        "change(s) staged and the build passed. Nothing was "
+                        "pushed. Call again with dry_run=False to publish."
                     ),
                 }
 
             stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             commit_message = message or f"Publish {len(published)} note(s) — {stamp}"
+            assets = plan.attachments
             sha = publisher.commit_and_push(commit_message)
 
             ctx.journal.record(
@@ -220,6 +237,14 @@ def register(mcp: MCPServer, ctx: Context) -> None:
                 added_count=len(plan.added),
                 updated_count=len(plan.updated),
                 removed_count=len(plan.removed),
+                attachments_added=sorted(assets.added),
+                attachments_updated=sorted(assets.updated),
+                attachments_removed=sorted(assets.removed),
+                attachments_added_count=len(assets.added),
+                attachments_updated_count=len(assets.updated),
+                attachments_removed_count=len(assets.removed),
+                attachments_missing_count=len(assets.missing),
+                png_rendered_count=assets.png_rendered,
             )
             log.info("published %s to %s", sha, publisher.remote)
 
