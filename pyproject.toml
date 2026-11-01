@@ -19,6 +19,9 @@ dependencies = [
     # publish_site renders SVG page images to PNG for link previews. A Rust
     # wheel (abi3, linux amd64/arm64): no system libraries, no Node, no browser.
     "resvg-py>=0.5.0",
+    # Lossless PNG shrinking for the rendered link previews (render.py):
+    # opaque RGBA -> RGB at maximum zlib compression, ~19% smaller.
+    "pillow>=13.0.0",
 ]
 
 [build-system]

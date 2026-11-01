@@ -641,3 +641,33 @@ def test_long_skipped_list_sets_truncated() -> None:
 
     out = PublishPlan(added=[], updated=[], removed=[], skipped=[f"S{i}.md" for i in range(40)]).as_dict()
     assert out["skipped_count"] == 40 and len(out["skipped"]) == 25 and out["truncated"] is True
+
+
+def test_rendered_png_is_shrunk_losslessly(tmp_path: Path) -> None:
+    import io
+
+    import resvg_py
+    from PIL import Image
+
+    from obsidian_mcp.render import _shrink
+
+    raw = bytes(resvg_py.svg_to_bytes(svg_string=SVG.decode(), width=1200, height=630))
+    small = _shrink(raw)
+    assert len(small) < len(raw)
+    a = Image.open(io.BytesIO(raw)).convert("RGB")
+    b = Image.open(io.BytesIO(small)).convert("RGB")
+    assert a.tobytes() == b.tobytes()  # identical pixels
+    assert Image.open(io.BytesIO(small)).mode == "RGB"
+
+
+def test_shrink_keeps_real_transparency_and_bad_input() -> None:
+    import io
+
+    from PIL import Image
+
+    from obsidian_mcp.render import _shrink
+
+    im = Image.new("RGBA", (4, 4), (10, 20, 30, 128))
+    b = io.BytesIO(); im.save(b, "PNG")
+    assert _shrink(b.getvalue()) == b.getvalue()
+    assert _shrink(b"not a png") == b"not a png"
