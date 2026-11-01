@@ -199,3 +199,31 @@ def test_set_image_treats_a_dotdot_image_as_the_notes_own(setup, vault) -> None:
     out, _ = call(mcp, "commit_heroes", job_id=started["job_id"], names=["Vauban"], set_image=True)
     assert out["heroes"][0]["image"].startswith("skipped: the note uses its own image")
     assert own in (vault.root / "Places" / "Vauban.md").read_text()
+
+
+def test_a_running_job_does_not_hold_up_shutdown(tmp_path: Path) -> None:
+    """A ThreadPoolExecutor worker is joined at exit, so a long render kept the
+    server alive; the daemon worker plus exit hook let it stop and kill the child."""
+    import subprocess
+
+    slow = tmp_path / "slow.py"
+    slow.write_text("import os, sys, time\nopen(sys.argv[2] + '.pid', 'w').write(str(os.getpid()))\ntime.sleep(60)\n")
+    script = tmp_path / "server.py"
+    script.write_text(
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from obsidian_mcp.hero.jobs import HeroJobs\n"
+        f"h = HeroJobs(Path({str(tmp_path / 'hero')!r}), 'test', [], command=[sys.executable, {str(slow)!r}])\n"
+        "jid = h.start([{'name': 'Slow', 'lat': 1, 'lng': 2}], 'V')['job_id']\n"
+        "while h._proc is None: time.sleep(0.05)\n"
+        "print(jid, flush=True)\n"
+    )
+    started = time.monotonic()
+    out = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=30,
+                         env={**__import__("os").environ, "PYTHONPATH": "src"})
+    assert out.returncode == 0, out.stderr
+    assert time.monotonic() - started < 15
+    pid = int(next((tmp_path / "hero" / "jobs").glob("*/out.pid")).read_text())
+    time.sleep(0.5)
+    with pytest.raises(ProcessLookupError):
+        __import__("os").kill(pid, 0)   # the generator child was killed too
