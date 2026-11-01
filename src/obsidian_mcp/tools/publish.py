@@ -160,6 +160,9 @@ def register(mcp: MCPServer, ctx: Context) -> None:
         The result's `changes.attachments` lists added / updated / removed /
         missing (referenced but not in the vault -- reported, never fatal).
 
+        Each list shows at most 25 paths; the matching `*_count` field (e.g.
+        `added_count`) is exact, and `truncated` is true when any list was cut.
+
         **dry_run defaults to True**: the first call stages and builds but
         pushes nothing, returning the exact set of additions, updates, and
         removals. Review that, then call again with dry_run=False to publish.

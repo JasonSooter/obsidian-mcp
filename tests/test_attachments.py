@@ -596,3 +596,48 @@ def test_note_sweep_keeps_notes_whose_vault_name_is_decomposed(vault, publisher)
     plan = publisher.stage(vault, published)
     assert plan.removed == []
     assert [p.name for p in site_note.parent.iterdir()] == [f"{NFC_NAME}.md"]
+
+
+def test_publish_result_caps_long_lists_but_keeps_counts() -> None:
+    """A first image publish touched ~1,900 files; listing them all made an
+    80-100 KB result that Claude clients could not take back inline."""
+    from obsidian_mcp.quartz import RESULT_LIST_LIMIT, AttachmentPlan, PublishPlan
+
+    many = [f"Attachments/Places/P{i:04}.svg" for i in range(1880)]
+    plan = PublishPlan(added=["A.md"], updated=[], removed=[])
+    plan.attachments = AttachmentPlan(added=many, removed=["Attachments/Old.png"])
+    out = plan.as_dict()
+    a = out["attachments"]
+    assert len(a["added"]) == RESULT_LIST_LIMIT and a["added_count"] == 1880
+    assert a["added"] == sorted(many)[:RESULT_LIST_LIMIT]
+    assert a["removed"] == ["Attachments/Old.png"] and a["removed_count"] == 1
+    assert out["truncated"] is True and "truncated_note" in out
+    assert out["added"] == ["A.md"] and out["added_count"] == 1
+    import json
+    assert len(json.dumps(out)) < 10_000
+
+
+def test_small_publish_result_is_unchanged_apart_from_counts() -> None:
+    from obsidian_mcp.quartz import PublishPlan
+
+    out = PublishPlan(added=["B.md", "A.md"], updated=[], removed=["C.md"]).as_dict()
+    assert out["added"] == ["A.md", "B.md"] and out["removed"] == ["C.md"]
+    assert out["truncated"] is False and "truncated_note" not in out
+
+
+def test_missing_reference_is_listed_once_per_note(vault, publisher) -> None:
+    text = "---\nimage: Attachments/Gone.svg\nsocialImage: Attachments/Gone.svg\n---\nx\n"
+    plan = publisher.stage_attachments(vault, {"N.md": _note(vault, "N.md", text)})
+    assert plan.missing == [{"note": "N.md", "reference": "Attachments/Gone.svg"}]
+
+
+def test_missing_attachment_message_says_attachment(server) -> None:
+    with pytest.raises(ToolFailed, match="No attachment at"):
+        call(server, "vault_read_attachment", path="Attachments/Places/Nope.svg")
+
+
+def test_long_skipped_list_sets_truncated() -> None:
+    from obsidian_mcp.quartz import PublishPlan
+
+    out = PublishPlan(added=[], updated=[], removed=[], skipped=[f"S{i}.md" for i in range(40)]).as_dict()
+    assert out["skipped_count"] == 40 and len(out["skipped"]) == 25 and out["truncated"] is True

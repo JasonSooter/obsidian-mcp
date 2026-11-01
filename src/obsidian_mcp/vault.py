@@ -138,6 +138,11 @@ class Vault:
         self._assert_not_excluded(resolved, rel)
 
         if must_exist and not resolved.is_file():
+            if extensions is ATTACHMENT_EXTENSIONS:
+                raise PathRejected(
+                    f"No attachment at {rel!r}. Use vault_list_attachments to find "
+                    "the current path -- it may have been moved or renamed."
+                )
             raise PathRejected(
                 f"No note at {rel!r}. Use vault_list or search_query to find the "
                 "current path -- it may have been moved or renamed."
