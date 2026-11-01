@@ -105,6 +105,27 @@ class Journal:
                 break
         return entries
 
+    def edited_after(self, vault: Vault, rel: str, when: float) -> bool:
+        """Whether this server wrote ``rel`` after ``when`` (a Unix timestamp).
+
+        Every write snapshots the note first, stamped with the write's time, so
+        a snapshot newer than ``when`` is a write after it. A note's first
+        write (a create) has no snapshot; any later write does.
+        """
+        bucket = self._bucket(vault.name, rel)
+        if not bucket.is_dir():
+            return False
+        cutoff = datetime.fromtimestamp(when, tz=timezone.utc)
+        for item in bucket.iterdir():
+            stamp = item.name.partition("-")[0]
+            try:
+                taken = datetime.strptime(stamp, _TS_FORMAT).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if taken > cutoff:
+                return True
+        return False
+
     def read_version(self, vault: Vault, rel: str, version_id: str) -> str:
         """Contents of one snapshot, as text (notes)."""
         return self.read_version_bytes(vault, rel, version_id).decode(

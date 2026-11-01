@@ -184,7 +184,10 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             # pushing below stay outside the queue, so writes keep flowing.
             # (Dropbox remains an uncoordinated writer, as it always was.)
             published = run_exclusive(_collect_published, target)
-            plan = publisher.stage(target, published)
+            plan = publisher.stage(
+                target, published,
+                edited_after=lambda rel, when: ctx.journal.edited_after(target, rel, when),
+            )
             try:
                 plan.attachments = publisher.stage_attachments(target, published)
             except BaseException:

@@ -1065,3 +1065,88 @@ def test_published_at_reads_non_ascii_paths(tmp_path: Path) -> None:
 
     assert unicodedata.normalize("NFC", "Places/Görlitz.md") in when
     assert "Places/Plain.md" in when
+
+
+def _site_with_commit(tmp_path: Path, rel: str, text: str, when: int) -> Path:
+    """A site repo whose only commit publishes ``rel`` at Unix time ``when``."""
+    repo = tmp_path / "site"
+    target = repo / "content" / rel
+    target.parent.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    target.write_text(text)
+    _git(repo, "add", ".")
+    stamp = f"@{when} +0000"
+    os.environ["GIT_COMMITTER_DATE"] = stamp
+    try:
+        _git(repo, "commit", "-q", "-m", "Published via Quartz Syncer", "--date", stamp)
+    finally:
+        del os.environ["GIT_COMMITTER_DATE"]
+    return repo
+
+
+def test_server_edits_inside_the_grace_window_are_republished(tmp_path: Path) -> None:
+    """2026-11-01: the plugin published Places/index.md while it was still being
+    built by appends, and every later append fell inside the 15-minute grace
+    window, so publish_site reported "site already matches" and the live page
+    stayed truncated. Writes this server made after the publish must count;
+    an outside edit inside the window must still be skipped."""
+    from datetime import datetime, timezone
+
+    from obsidian_mcp.config import QuartzConfig
+    from obsidian_mcp.quartz import Publisher
+
+    published_at = 1793537861
+    rel = "Places/index.md"
+    repo = _site_with_commit(tmp_path, rel, "---\npublish: true\n---\n\nPart one.\n", published_at)
+    config = QuartzConfig(
+        repo_path=repo, remote="origin", branch="main",
+        ssh_key_path=None, git_author="t <t@t>", build_locally=False,
+    )
+    publisher = Publisher(config, tmp_path / "locks")
+    root = tmp_path / "MyVault"
+    (root / "Places").mkdir(parents=True)
+    vault = Vault(name="MyVault", root=root.resolve())
+    journal = Journal(tmp_path / "versions", tmp_path / "audit.log", retention_days=30)
+
+    full = "---\npublish: true\n---\n\nPart one.\n\nPart two.\n"
+    edited = float(published_at + 176)  # inside the 900 s window
+
+    # An edit nobody recorded (e.g. from Obsidian on another machine): skipped.
+    plan = publisher.stage(
+        vault, {rel: (full, edited)},
+        edited_after=lambda r, when: journal.edited_after(vault, r, when),
+    )
+    assert plan.updated == []
+
+    # The same edit, made through this server after the publish: republished.
+    bucket = tmp_path / "versions" / "MyVault" / rel
+    bucket.mkdir(parents=True)
+    after = datetime.fromtimestamp(published_at + 14, tz=timezone.utc)
+    (bucket / f"{after.strftime('%Y%m%dT%H%M%S%f')}-append.md").write_text("Part one.\n")
+    plan = publisher.stage(
+        vault, {rel: (full, edited)},
+        edited_after=lambda r, when: journal.edited_after(vault, r, when),
+    )
+    assert plan.updated == [rel]
+    assert "Part two." in (repo / "content" / rel).read_text()
+
+
+def test_journal_edited_after_compares_snapshot_times(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    root = tmp_path / "MyVault"
+    root.mkdir()
+    vault = Vault(name="MyVault", root=root.resolve())
+    journal = Journal(tmp_path / "versions", tmp_path / "audit.log", retention_days=30)
+    assert not journal.edited_after(vault, "N.md", 0.0)  # never written
+
+    bucket = tmp_path / "versions" / "MyVault" / "N.md"
+    bucket.mkdir(parents=True)
+    taken = datetime(2026, 11, 1, 12, 58, 39, 226514, tzinfo=timezone.utc)
+    (bucket / f"{taken.strftime('%Y%m%dT%H%M%S%f')}-append.md").write_text("x")
+    (bucket / "not-a-snapshot.md").write_text("x")  # ignored, not a crash
+
+    assert journal.edited_after(vault, "N.md", taken.timestamp() - 1)
+    assert not journal.edited_after(vault, "N.md", taken.timestamp() + 1)
