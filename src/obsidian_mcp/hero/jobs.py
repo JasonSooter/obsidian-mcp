@@ -138,6 +138,8 @@ class HeroJobs:
         # running generator so it does not outlive the server either.
         self._queue: queue.Queue[str] = queue.Queue()
         self._proc: subprocess.Popen[str] | None = None
+        self._proc_lock = threading.Lock()   # spawn and stop() never interleave
+        self._stopping = False
         threading.Thread(target=self._work, name="hero", daemon=True).start()
         atexit.register(self.stop)
         self._recover()
@@ -230,15 +232,20 @@ class HeroJobs:
 
     def stop(self) -> None:
         """Kill a running generator (at exit). The job is marked interrupted at the next start."""
-        proc = self._proc
+        with self._proc_lock:
+            self._stopping = True
+            proc = self._proc
         if proc is not None and proc.poll() is None:
             proc.kill()
 
     def _generator(self, *args: str, timeout: float, stdout_handler=None) -> int:
         cmd = [*self._command, *args]
-        proc = subprocess.Popen(cmd, env=self._env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding="utf-8")
-        self._proc = proc
+        with self._proc_lock:
+            if self._stopping:   # shutting down: never start a child the exit hook could miss
+                return -1
+            proc = subprocess.Popen(cmd, env=self._env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, encoding="utf-8")
+            self._proc = proc
         timer = threading.Timer(timeout, proc.kill)
         timer.start()
         try:

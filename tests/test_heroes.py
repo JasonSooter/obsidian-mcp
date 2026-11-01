@@ -227,3 +227,12 @@ def test_a_running_job_does_not_hold_up_shutdown(tmp_path: Path) -> None:
     time.sleep(0.5)
     with pytest.raises(ProcessLookupError):
         __import__("os").kill(pid, 0)   # the generator child was killed too
+
+
+def test_no_generator_starts_once_stopping(tmp_path: Path) -> None:
+    marker = tmp_path / "ran"
+    h = HeroJobs(tmp_path / "hero", "test", [],
+                 command=[sys.executable, "-c", f"open({str(marker)!r}, 'w').write('x')"])
+    h.stop()
+    assert h._generator("x", timeout=5) == -1
+    assert not marker.exists()
