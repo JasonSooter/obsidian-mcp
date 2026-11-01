@@ -197,6 +197,14 @@ def instrumented(
                     call = functools.partial(contextvars.copy_context().run, run, args, kwargs)
                     return await asyncio.get_running_loop().run_in_executor(_WRITES, call)
                 return await asyncio.to_thread(run, args, kwargs)
+            except asyncio.CancelledError:
+                # The client went away (a timeout, usually). A worker thread
+                # cannot be interrupted, so the call runs on to completion in
+                # the background -- a write still lands atomically, and a
+                # client's retry queues behind it on the write thread rather
+                # than interleaving. Record it as cancelled, never as "ok".
+                status = "cancelled"
+                raise
             except Exception as exc:
                 status = "error"
                 error_kind = type(exc).__name__
