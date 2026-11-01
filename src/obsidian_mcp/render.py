@@ -20,6 +20,7 @@ script in every worker and so depend on how the server happened to be started.
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import logging
 import os
@@ -34,7 +35,10 @@ log = logging.getLogger(__name__)
 
 WIDTH, HEIGHT = 1200, 630
 # Bump to invalidate every cached PNG (e.g. after changing render options).
-RENDER_VERSION = "1"
+# Bump when the render pipeline changes output for the same SVG: it is part of the
+# cache key, so cached PNGs from the old pipeline are re-rendered. 2: CSS variables
+# are resolved before rendering (resvg ignores var(), so v2 heroes rendered black).
+RENDER_VERSION = "2"
 # Below this many misses, worker start-up costs more than it saves.
 POOL_THRESHOLD = 8
 MAX_WORKERS = 4
@@ -51,6 +55,41 @@ class RenderResult:
     failed: dict[str, str] = field(default_factory=dict)
     rendered: int = 0
     cached: int = 0
+
+
+_STYLE = re.compile(r"(<style[^>]*>)(.*?)(</style>)", re.S)
+_VARS_RULE = re.compile(r"(#light:target~|#dark:target~)?#r\{((?:\s*--[\w-]+\s*:[^;}]*;?)+)\}")
+_VAR_USE = re.compile(r"var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)")
+
+
+def resolve_css_vars(svg: str, theme: str = "dark") -> str:
+    """Replace CSS custom properties in an SVG's <style> with their values.
+
+    resvg supports class selectors but not var(): every fill and stroke that
+    used one rendered as nothing, so v2 place heroes (themes as CSS variables)
+    came out black apart from their one literal gradient. The hero convention is
+    `#r{--k:v;...}` for the default (dark) theme and `#light:target~#r{...}` /
+    `#dark:target~#r{...}` for the others; `theme` picks one. An SVG without
+    variables is returned unchanged.
+    """
+    if "var(" not in svg:
+        return svg
+
+    def fix(m: re.Match[str]) -> str:
+        css = m.group(2)
+        found: dict[str, dict[str, str]] = {}
+        for rule in _VARS_RULE.finditer(css):
+            name = {"#light:target~": "light", "#dark:target~": "dark"}.get(rule.group(1) or "", "default")
+            found.setdefault(name, {}).update(
+                (k.strip(), v.strip()) for k, v in
+                (d.split(":", 1) for d in rule.group(2).split(";") if ":" in d)
+            )
+        values = {**found.get("default", {}), **found.get(theme, {})}
+        css = _VARS_RULE.sub("", css)
+        css = _VAR_USE.sub(lambda u: values.get(u.group(1), u.group(2) or u.group(0)), css)
+        return m.group(1) + css + m.group(3)
+
+    return _STYLE.sub(fix, svg)
 
 
 def _font_dirs() -> list[str]:
@@ -93,7 +132,7 @@ def _render_to_file(svg: bytes, out: str, font_dirs: list[str]) -> None:
 
     png = _shrink(bytes(
         resvg_py.svg_to_bytes(
-            svg_string=svg.decode("utf-8"),
+            svg_string=resolve_css_vars(svg.decode("utf-8")),
             width=WIDTH,
             height=HEIGHT,
             font_dirs=font_dirs,
