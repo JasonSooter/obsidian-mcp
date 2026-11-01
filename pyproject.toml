@@ -22,6 +22,7 @@ dependencies = [
     # Lossless PNG shrinking for the rendered link previews (render.py):
     # opaque RGBA -> RGB at maximum zlib compression, ~19% smaller.
     "pillow>=13.0.0",
+    "shapely>=2.1",
 ]
 
 [build-system]
