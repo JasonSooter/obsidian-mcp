@@ -25,8 +25,9 @@ import os
 import shutil
 import subprocess
 import unicodedata
-from urllib.parse import quote
+from collections.abc import Callable
 from contextlib import contextmanager
+from urllib.parse import quote
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,6 +64,8 @@ LOCK_FILENAME = "quartz-publish.lock"
 # A note edited within this window of its publishing commit is treated as
 # already published. The plugin writes the file, then commits a moment later,
 # so an exact comparison would republish everything it just published.
+# Edits this server made itself (recorded in its version journal) are exempt:
+# they are real edits however soon they follow a publish.
 PUBLISH_GRACE_SECONDS = 900
 
 # Where `npx quartz build` writes the site.
@@ -463,12 +466,24 @@ class Publisher:
                 when.setdefault(rel, stamp)
         return when
 
-    def stage(self, vault: Vault, published: dict[str, tuple[str, float]]) -> PublishPlan:
+    def stage(
+        self,
+        vault: Vault,
+        published: dict[str, tuple[str, float]],
+        *,
+        edited_after: Callable[[str, float], bool] | None = None,
+    ) -> PublishPlan:
         """Mirror the published notes into the repo's content directory.
 
         ``published`` maps vault-relative path -> (contents, mtime). Anything in the
         content directory that is no longer published is removed, so unflagging
         a note actually takes it off the site.
+
+        ``edited_after(rel, when)`` says whether this server itself wrote the
+        note after ``when``. Such a note is republished even inside the grace
+        window: a note the plugin published while it was still being written
+        (Places/index.md, 2026-11-01, built by repeated appends) would
+        otherwise stay truncated on the site until edited again 15 minutes on.
         """
         self.content_dir.mkdir(parents=True, exist_ok=True)
         plan = PublishPlan(added=[], updated=[], removed=[])
@@ -484,7 +499,11 @@ class Publisher:
             # and the commit that published it.
             was = last_published.get(unicodedata.normalize("NFC", rel))
             if was is not None and mtime <= was + PUBLISH_GRACE_SECONDS:
-                continue
+                edited_since = (
+                    mtime > was and edited_after is not None and edited_after(rel, was)
+                )
+                if not edited_since:
+                    continue
             # NFC, git's form: a decomposed name from a macOS-synced vault
             # would otherwise be a second file beside the published one.
             target = self.content_dir / site_path(rel)
