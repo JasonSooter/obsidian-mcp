@@ -15,9 +15,11 @@ because an observability backend is unreachable.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import logging
 import os
+import threading
 import time
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -130,22 +132,50 @@ def _safe_key(key: str) -> str:
     return key
 
 
-def instrumented(name: str, *, mutation: bool = False) -> Callable[[F], F]:
-    """Time a tool call and emit its outcome.
+# Serialises the tools that write notes. Tools run in worker threads (see
+# instrumented), so without this two clients patching one note could interleave
+# their read-modify-write and silently lose an edit -- something the single
+# event loop used to prevent by accident. Held for milliseconds per call.
+_WRITE_LOCK = threading.Lock()
+
+
+def instrumented(
+    name: str, *, mutation: bool = False, exclusive: bool | None = None
+) -> Callable[[F], F]:
+    """Time a tool call and emit its outcome -- and run it off the event loop.
+
+    Every tool body here is synchronous file, subprocess and git work behind an
+    `async def`. Run on the event loop, one slow call froze the whole server for
+    every client: a 133 MB publish_site on 2026-11-01 made claude.ai time out
+    after 30 s while the scheduled routine and Desktop both needed the vault. So
+    each call runs in a worker thread and the loop keeps serving everyone else.
+
+    `exclusive` (default: the same as `mutation`) takes the write lock.
+    publish_site passes exclusive=False: it only reads the vault, holds its own
+    publish lock, and can take minutes -- it must not stall note writes.
 
     Applied *under* @mcp.tool so the SDK still sees the real signature through
     functools.wraps -- the tool's JSON schema is generated from the wrapped
     function's annotations, and losing them would silently break the schema.
     """
+    takes_lock = mutation if exclusive is None else exclusive
 
     def decorate(fn: F) -> F:
+        def run(args: tuple, kwargs: dict) -> Any:
+            # A fresh loop per call in the worker thread: tool bodies await
+            # nothing today, but this stays correct if one ever does.
+            if takes_lock:
+                with _WRITE_LOCK:
+                    return asyncio.run(fn(*args, **kwargs))
+            return asyncio.run(fn(*args, **kwargs))
+
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             started = time.perf_counter()
             status = "ok"
             error_kind = None
             try:
-                return await fn(*args, **kwargs)
+                return await asyncio.to_thread(run, args, kwargs)
             except Exception as exc:
                 status = "error"
                 error_kind = type(exc).__name__

@@ -140,7 +140,7 @@ def register(mcp: MCPServer, ctx: Context) -> None:
         }
 
     @mcp.tool(annotations=WRITES)
-    @instrumented("publish_site", mutation=True)
+    @instrumented("publish_site", mutation=True, exclusive=False)
     async def publish_site(
         vault: str | None = None,
         dry_run: bool = True,
