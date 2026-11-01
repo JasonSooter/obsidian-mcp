@@ -21,7 +21,7 @@ from .oauth.login import register_routes as register_login_routes
 from .oauth.provider import ObsidianOAuthProvider
 from .oauth.store import Store
 from .oauth.totp import normalise_secret
-from .tools import attachments, history, publish, read, write
+from .tools import attachments, heroes, history, publish, read, write
 from .tools._common import Context
 
 log = logging.getLogger(__name__)
@@ -52,6 +52,14 @@ vault_list_attachments. vault_delete, list_versions and restore_version accept
 attachment paths too.
 """
 
+HERO_INSTRUCTIONS = """\
+
+Place heroes (map images for place notes) are rendered on the server, never typed
+out by hand: start_hero_job with a batch of place descriptions, poll
+hero_job_status for results and contact sheets, get_hero for any one at full
+size, then commit_heroes to write the approved ones into the vault.
+"""
+
 PUBLISH_INSTRUCTIONS = """\
 
 Notes flagged `publish: true` are published to a public website. set_publish_status
@@ -61,7 +69,7 @@ review a dry run before calling it with dry_run=False.
 """
 
 
-def build(config: Config, ctx: Context) -> tuple[MCPServer, Starlette]:
+def build(config: Config, ctx: Context, hero_jobs: Any = None) -> tuple[MCPServer, Starlette]:
     """Construct the MCP server and its Streamable HTTP app.
 
     Auth is OAuth 2.1 throughout: the SDK is handed a full authorization-server
@@ -70,6 +78,8 @@ def build(config: Config, ctx: Context) -> tuple[MCPServer, Starlette]:
     instructions = INSTRUCTIONS
     if ctx.publisher is not None:
         instructions += PUBLISH_INSTRUCTIONS
+    if hero_jobs is not None:
+        instructions += HERO_INSTRUCTIONS
 
     store = Store(config.oauth_db_path)
     oauth_provider = ObsidianOAuthProvider(store)
@@ -112,6 +122,11 @@ def build(config: Config, ctx: Context) -> tuple[MCPServer, Starlette]:
     write.register(mcp, ctx)
     attachments.register(mcp, ctx)
     history.register(mcp, ctx)
+
+    # Off unless OBSIDIAN_MCP_HEROES=true: they reach out to Nominatim and Wikipedia.
+    if hero_jobs is not None:
+        heroes.register(mcp, ctx, hero_jobs)
+        log.info("place hero tools ENABLED")
 
     # Never-registered-never-reachable: with QUARTZ_ENABLED=false the publish
     # tools are not constructed at all, so a direct tools/call by name gets the

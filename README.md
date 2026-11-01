@@ -107,6 +107,8 @@ main branch, `:sha-<commit>` pins a build. Pin by digest in production.
 | `OBSIDIAN_ATTACHMENT_FOLDERS` | `Attachments` | Comma-separated vault folders the attachment tools may write, read, list and delete in |
 | `OBSIDIAN_MAX_ATTACHMENT_BYTES` | `2000000` | Size cap for `vault_write_attachment` / `vault_read_attachment` |
 | `OBSIDIAN_MCP_FONT_DIRS` | unset | Extra font directories (`:`-separated) for rendering hero SVGs to PNG |
+| `OBSIDIAN_MCP_HEROES` | `false` | Turn on the place hero tools (they call Nominatim and Wikipedia) |
+| `OBSIDIAN_MCP_HERO_USER_AGENT` | unset | Required with `OBSIDIAN_MCP_HEROES=true`: a User-Agent naming your app and a contact URL or email, as [Nominatim's usage policy](https://operations.osmfoundation.org/policies/nominatim/) asks |
 
 **Port 8780, not 8770**, so it can run beside
 [anki-mcp](https://github.com/JasonSooter/anki-mcp) on 8770. Under some Docker
@@ -178,6 +180,7 @@ and habits carry across both servers.
 | `resolve_links` / `list_backlinks` | wikilink graph, shortest-unique-path resolved |
 | `list_versions` / `restore_version` | undo, including for deleted notes and overwritten or deleted attachments (byte-exact) |
 | `set_publish_status` / `list_published` / `preview_publish` / `publish_site` | Quartz; only when `QUARTZ_ENABLED=true` |
+| `start_hero_job` / `hero_job_status` / `get_hero` / `commit_heroes` | Place hero maps; only when `OBSIDIAN_MCP_HEROES=true` (see below) |
 
 ### Beyond the plugin-based connector
 
@@ -414,6 +417,31 @@ publish_site(dry_run=False)
 | 502 from the MCP proxy | **Check `docker logs obsidian-mcp` for `POST /mcp` first.** If the request never arrived, the failure is between Anthropic's proxy and your public ingress, not your server — confirm with `curl https://<your-host>/healthz`, which will still answer. Affects every tool, not just slow ones. |
 | A note is never published | It contains a Dataview block — check `skipped` in the result. |
 | Frontmatter dates keep changing | Fixed: PyYAML was coercing `2024-06-04T19:23:37-06:00` into a datetime and re-emitting it with a space. Loader *and* dumper now leave date-like scalars alone. |
+
+## Place heroes (optional)
+
+Off unless `OBSIDIAN_MCP_HEROES=true`. Renders a 1200×630 map image for a place
+note (an SVG holding both a dark and a light theme; `file.svg#light` shows the
+light one) from Natural Earth data, Nominatim and Wikipedia, on the server. A
+client sends a few hundred bytes per place instead of writing 16–50 KB of SVG
+through `vault_write_attachment`.
+
+```text
+start_hero_job(jobs=[{name, lat, lng, icon, ...}, ...])   up to 25; queued, rendered one by one
+hero_job_status(job_id)        results as they finish, plus contact sheets (dark | light, 6 per image)
+get_hero(job_id, name, theme)  one at full size; or get_hero(path=...) for one already in the vault
+commit_heroes(job_id, names, set_image=False)   write the approved ones to Attachments/Places/
+```
+
+Rendering never writes to the vault. `commit_heroes` journals any file it
+replaces, leaves identical files alone, and with `set_image=True` sets a note's
+`image` only when it is missing or already under `Attachments/Places/`.
+
+The first job downloads and builds the map data (about 300 MB, a minute or two)
+into `$OBSIDIAN_MCP_STATE_DIR/hero/data`. A job takes 12–20 s per place: every
+job on the server shares one Nominatim pace of one request per second. Job
+results are kept for seven days; a job running when the server restarts is
+reported as `interrupted`.
 
 ## Telemetry (optional)
 
