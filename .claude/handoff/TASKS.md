@@ -32,12 +32,22 @@ None set. Pick from the register.
 ## 📌 Standing facts that save re-derivation
 
 - The OAuth code is shared by anki-mcp, obsidian-mcp and ynab-mcp: fix bugs in all three.
+- **Quartz Syncer won't delete frontmatter-only images by itself.** Read from Syncer 2.2.0's
+  source on 2026-11-01: it counts an image as published only when a note's *body* embeds it,
+  so images referenced only from frontmatter (`image:`, `socialImage:`) show up as "Unlinked
+  media" in the Advanced tab of its publication center. They are deleted only if someone
+  selects them there and clicks delete, runs Syncer's orphan clean with `force`, or turns on
+  "Automatically clean orphaned media" (off by default; it also skips itself when more than
+  80% of media look orphaned). So: leave that setting off and don't bulk-delete Unlinked media.
 
 ---
 
 ## ⚠️ False premises and method traps
 
-- None recorded yet.
+- **Ignored files are expendable to git.** A checkout that brings a tracked file to a path
+  you keep ignored (`.git/info/exclude`) overwrites the ignored copy without warning. That
+  is how a session-local register at this file's path was lost on 2026-11-01. Never keep
+  durable state at a path the repo might later track.
 
 ---
 
