@@ -151,6 +151,31 @@ def test_publish_site_snapshot_runs_in_turn_with_writes() -> None:
     assert "run_exclusive(_collect_published, target)" in inspect.getsource(publish)
 
 
+def test_a_cancelled_call_is_not_recorded_as_ok(monkeypatch) -> None:
+    """Copilot on PR #7: a client timeout must not be logged as a success."""
+    from obsidian_mcp import telemetry
+
+    events: list[dict] = []
+    monkeypatch.setattr(telemetry, "emit", lambda event, **attrs: events.append(attrs))
+
+    @instrumented("slow_write", mutation=True)
+    async def slow_write() -> None:
+        time.sleep(0.3)
+
+    async def scenario():
+        task = asyncio.create_task(slow_write())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await asyncio.sleep(0.4)  # let the worker finish before the loop closes
+
+    asyncio.run(scenario())
+    assert [e["status"] for e in events] == ["cancelled"]
+
+
 def test_publish_site_is_registered_non_exclusive() -> None:
     import inspect
 
