@@ -113,6 +113,44 @@ def test_queued_writes_do_not_starve_reads() -> None:
     assert counter["value"] == 40
 
 
+def test_run_exclusive_never_sees_a_write_half_done() -> None:
+    """Copilot on PR #7: publish_site's snapshot must not interleave with a
+    multi-step write such as vault_move."""
+    from obsidian_mcp.telemetry import run_exclusive
+
+    mcp = MCPServer(name="snapshot")
+    state = {"moving": False, "seen_mid_move": None}
+
+    @mcp.tool()
+    @instrumented("slow_move", mutation=True)
+    async def slow_move() -> None:
+        state["moving"] = True
+        time.sleep(0.3)  # between writing the destination and unlinking the source
+        state["moving"] = False
+
+    @mcp.tool()
+    @instrumented("snapshot", exclusive=False)
+    async def snapshot() -> None:
+        state["seen_mid_move"] = run_exclusive(lambda: state["moving"])
+
+    async def scenario():
+        move = asyncio.create_task(mcp.call_tool("slow_move", {}))
+        await asyncio.sleep(0.05)
+        await mcp.call_tool("snapshot", {})
+        await move
+
+    asyncio.run(scenario())
+    assert state["seen_mid_move"] is False
+
+
+def test_publish_site_snapshot_runs_in_turn_with_writes() -> None:
+    import inspect
+
+    from obsidian_mcp.tools import publish
+
+    assert "run_exclusive(_collect_published, target)" in inspect.getsource(publish)
+
+
 def test_publish_site_is_registered_non_exclusive() -> None:
     import inspect
 

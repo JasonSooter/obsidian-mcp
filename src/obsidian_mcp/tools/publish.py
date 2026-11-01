@@ -21,7 +21,7 @@ from mcp.server.mcpserver import MCPServer
 from ..errors import ToolError
 from ..notes import parse, set_frontmatter_key
 from ..quartz import PUBLISH_KEY, is_published
-from ..telemetry import instrumented
+from ..telemetry import instrumented, run_exclusive
 from ._common import READ_ONLY, WRITES, Context, summarize
 
 log = logging.getLogger(__name__)
@@ -174,7 +174,13 @@ def register(mcp: MCPServer, ctx: Context) -> None:
             # Start from what's live, or a stale tree makes the diff (and the
             # push) wrong. Dry runs too, so they report what a publish would do.
             publisher.sync_with_remote()
-            published = _collect_published(target)
+            # In turn with the note-writing tools: publish_site itself is not
+            # exclusive (it takes minutes), so without this the snapshot could
+            # catch a vault_move half done -- both paths published, backlinks
+            # stale. Reading the notes takes seconds; rendering, building and
+            # pushing below stay outside the queue, so writes keep flowing.
+            # (Dropbox remains an uncoordinated writer, as it always was.)
+            published = run_exclusive(_collect_published, target)
             plan = publisher.stage(target, published)
             try:
                 plan.attachments = publisher.stage_attachments(target, published)
