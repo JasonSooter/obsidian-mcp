@@ -60,11 +60,38 @@ def _font_dirs() -> list[str]:
     return dirs
 
 
+def _shrink(png: bytes) -> bytes:
+    """Losslessly re-encode resvg's PNG smaller, or return it unchanged.
+
+    resvg always writes RGBA, but hero images are fully opaque: dropping a
+    constant alpha channel and re-deflating at maximum compression is ~19%
+    smaller with identical pixels. Not part of the cache key on purpose, so
+    previews already rendered (and published) are not re-encoded: that would
+    add every one of them to the site's git history a second time.
+    """
+    try:
+        import io
+
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(png))
+        if image.mode == "RGBA":
+            if image.getchannel("A").getextrema() != (255, 255):
+                return png  # real transparency: keep it
+            image = image.convert("RGB")
+        out = io.BytesIO()
+        image.save(out, "PNG", optimize=True, compress_level=9)
+        smaller = out.getvalue()
+        return smaller if len(smaller) < len(png) else png
+    except Exception:  # noqa: BLE001 -- never fail a render over compression
+        return png
+
+
 def _render_to_file(svg: bytes, out: str, font_dirs: list[str]) -> None:
     """Worker: render one SVG and write the PNG atomically. Top-level so it pickles."""
     import resvg_py
 
-    png = bytes(
+    png = _shrink(bytes(
         resvg_py.svg_to_bytes(
             svg_string=svg.decode("utf-8"),
             width=WIDTH,
@@ -74,7 +101,7 @@ def _render_to_file(svg: bytes, out: str, font_dirs: list[str]) -> None:
             # bundled fonts lack (the Arabic in a few place names, say).
             skip_system_fonts=False,
         )
-    )
+    ))
     target = Path(out)
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".render.", suffix=".png")
     try:
