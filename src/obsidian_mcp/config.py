@@ -66,6 +66,15 @@ class Config:
     # Vault-relative folders the attachment tools may touch, and their size cap.
     attachment_folders: tuple[str, ...] = DEFAULT_ATTACHMENT_FOLDERS
     max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES
+    # Place hero rendering (hero/): off unless asked for. Nominatim's usage
+    # policy requires a User-Agent that identifies whoever runs the server.
+    heroes_enabled: bool = False
+    hero_user_agent: str | None = None
+
+    @property
+    def hero_dir(self) -> Path:
+        """Hero map data (built once, ~1 GB), landmark cache and job folders."""
+        return self.state_dir / "hero"
 
     @property
     def versions_dir(self) -> Path:
@@ -167,6 +176,14 @@ def load() -> Config:
     # request reaches the other service -- so a distinct default matters.
     port = _env_int("OBSIDIAN_MCP_PORT", 8780)
 
+    heroes_enabled = _env_bool("OBSIDIAN_MCP_HEROES", False)
+    hero_user_agent = _env("OBSIDIAN_MCP_HERO_USER_AGENT")
+    if heroes_enabled and not hero_user_agent:
+        raise ConfigError(
+            "OBSIDIAN_MCP_HEROES=true needs OBSIDIAN_MCP_HERO_USER_AGENT: Nominatim's "
+            "usage policy asks for a User-Agent naming the app and a contact URL or email."
+        )
+
     quartz: QuartzConfig | None = None
     # Off unless asked for: publishing needs a Quartz repo checked out at
     # QUARTZ_REPO_PATH, and most installs have none.
@@ -205,6 +222,8 @@ def load() -> Config:
         max_attachment_bytes=_env_int(
             "OBSIDIAN_MAX_ATTACHMENT_BYTES", DEFAULT_MAX_ATTACHMENT_BYTES
         ),
+        heroes_enabled=heroes_enabled,
+        hero_user_agent=hero_user_agent,
     )
 
 

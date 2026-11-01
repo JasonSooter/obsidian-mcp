@@ -123,7 +123,13 @@ def main() -> int:
     # here also guarantees telemetry is flushed on that path.
     try:
         try:
-            _, app = build(config, ctx)
+            hero_jobs = None
+            if config.heroes_enabled:
+                from .hero.jobs import HeroJobs
+                from .render import _font_dirs
+
+                hero_jobs = HeroJobs(config.hero_dir, config.hero_user_agent or "", _font_dirs())
+            _, app = build(config, ctx, hero_jobs)
         except (ConfigError, InvalidTOTPSecret) as exc:
             log.error("configuration error: %s", exc)
             return 2
