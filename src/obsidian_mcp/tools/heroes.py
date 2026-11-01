@@ -12,6 +12,7 @@ Rendering never touches the vault; commit_heroes is the only write.
 
 from __future__ import annotations
 
+import posixpath
 from typing import Any
 
 from mcp.server.mcpserver import Image, MCPServer
@@ -203,10 +204,22 @@ def register(mcp: MCPServer, ctx: Context, heroes: HeroJobs) -> None:
         current = parse(raw).metadata.get("image")
         if current == hero_rel:
             return "already set"
-        if current and not str(current).startswith(HERO_FOLDER):
+        if current and not _is_hero_path(str(current)):
             return f"skipped: the note uses its own image ({current})"
         version_id = ctx.journal.snapshot(target, resolved, op="patch")
         target.write_text_atomic(resolved, set_frontmatter_key(raw, "image", hero_rel))
         ctx.journal.record(tool="commit_heroes", vault=target.name, path=note_rel, version_id=version_id,
                            operation="set_image", image=hero_rel)
         return "set"
+
+
+def _is_hero_path(value: str) -> bool:
+    """Whether a note's `image` already points into the hero folder, after normalising.
+
+    A plain prefix test let `Attachments/Places/../Photos/me.jpg` pass, so
+    set_image would have replaced a note's own image.
+    """
+    parts = value.replace("\\", "/").split("/")
+    if ".." in parts:
+        return False
+    return posixpath.normpath(value).startswith(HERO_FOLDER)

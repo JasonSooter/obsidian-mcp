@@ -188,3 +188,14 @@ def test_generator_helpers_without_map_data() -> None:
     assert g.region_half({"boundingbox": ["36", "40", "-84", "-78"]}, 37.5, -81.5) == pytest.approx(2.4)
     assert g.region_half({"boundingbox": ["0", "1", "0", "1"]}, 50, 50) == 6.0   # box not around the pin
     assert g.region_half(None, 0, 0) == 6.0
+
+
+def test_set_image_treats_a_dotdot_image_as_the_notes_own(setup, vault) -> None:
+    mcp, jobs, _ = setup
+    own = "Attachments/Places/../Photos/me.jpg"
+    (vault.root / "Places" / "Vauban.md").write_text(f"---\nimage: {own}\n---\n\nBody.\n")
+    started, _ = call(mcp, "start_hero_job", jobs=[JOB])
+    _wait(jobs, started["job_id"])
+    out, _ = call(mcp, "commit_heroes", job_id=started["job_id"], names=["Vauban"], set_image=True)
+    assert out["heroes"][0]["image"].startswith("skipped: the note uses its own image")
+    assert own in (vault.root / "Places" / "Vauban.md").read_text()
