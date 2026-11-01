@@ -25,7 +25,8 @@ import subprocess
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+import atexit
+import queue
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -132,7 +133,13 @@ class HeroJobs:
         self._needs_data = command is None
         self._lock = threading.Lock()
         self._sheet_lock = threading.Lock()
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hero")
+        # A daemon thread, not a ThreadPoolExecutor: the executor's worker is joined at
+        # interpreter exit, so a 25-place render held up a restart. The exit hook kills a
+        # running generator so it does not outlive the server either.
+        self._queue: queue.Queue[str] = queue.Queue()
+        self._proc: subprocess.Popen[str] | None = None
+        threading.Thread(target=self._work, name="hero", daemon=True).start()
+        atexit.register(self.stop)
         self._recover()
 
     # -- state on disk -------------------------------------------------------
@@ -190,7 +197,7 @@ class HeroJobs:
         ahead = sum(1 for s in self._states() if s.get("status") in {"queued", "running"})
         self._write_state(d, {"job_id": job_id, "vault": vault, "status": "queued", "count": len(jobs),
                               "created": time.time(), "results": [None] * len(jobs)})
-        self._worker.submit(self._run, job_id)
+        self._queue.put(job_id)
         return {"job_id": job_id, "status": "queued", "count": len(jobs), "jobs_ahead": ahead,
                 "estimated_seconds": (ahead * MAX_JOBS_PER_BATCH + len(jobs)) * 20}
 
@@ -217,10 +224,21 @@ class HeroJobs:
 
     # -- worker ----------------------------------------------------------------
 
+    def _work(self) -> None:
+        while True:
+            self._run(self._queue.get())
+
+    def stop(self) -> None:
+        """Kill a running generator (at exit). The job is marked interrupted at the next start."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+
     def _generator(self, *args: str, timeout: float, stdout_handler=None) -> int:
         cmd = [*self._command, *args]
         proc = subprocess.Popen(cmd, env=self._env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding="utf-8")
+        self._proc = proc
         timer = threading.Timer(timeout, proc.kill)
         timer.start()
         try:
@@ -232,6 +250,7 @@ class HeroJobs:
             code = proc.wait()
         finally:
             timer.cancel()
+            self._proc = None
         if code != 0 and stderr:
             log.warning("hero generator %s exited %s: %s", args[:1], code, stderr[-2000:])
         return code
