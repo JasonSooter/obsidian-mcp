@@ -671,3 +671,39 @@ def test_shrink_keeps_real_transparency_and_bad_input() -> None:
     b = io.BytesIO(); im.save(b, "PNG")
     assert _shrink(b.getvalue()) == b.getvalue()
     assert _shrink(b"not a png") == b"not a png"
+
+
+THEMED_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20" viewBox="0 0 40 20">'
+    "<style>#r{--bg:#2e3440;--acc:#b48ead}#light:target~#r{--bg:#eceff4;--acc:#9a6d93}"
+    "#dark:target~#r{--bg:#2e3440;--acc:#b48ead}.pb{fill:var(--bg)}.ac{fill:var(--acc, #000)}</style>"
+    '<g id="light"/><g id="dark"/><g id="r"><rect class="pb" width="40" height="20"/>'
+    '<rect class="ac" x="10" y="5" width="20" height="10"/></g></svg>'
+)
+
+
+def test_resolve_css_vars_picks_the_theme_and_drops_the_variable_rules() -> None:
+    from obsidian_mcp.render import resolve_css_vars
+
+    dark = resolve_css_vars(THEMED_SVG)
+    light = resolve_css_vars(THEMED_SVG, "light")
+    assert "var(" not in dark and "var(" not in light
+    assert ".pb{fill:#2e3440}" in dark and ".ac{fill:#b48ead}" in dark
+    assert ".pb{fill:#eceff4}" in light and ".ac{fill:#9a6d93}" in light
+    assert "--bg" not in dark  # the declarations themselves are gone
+    plain = '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="#fff"/></svg>'
+    assert resolve_css_vars(plain) == plain
+
+
+def test_svg_styled_with_css_variables_does_not_render_black(tmp_path: Path) -> None:
+    """2026-11-01: resvg ignores var(), so every v2 place hero's link-preview PNG
+    was black except one literal gradient. Exercised through the publish path."""
+    from PIL import Image
+
+    from obsidian_mcp.render import HEIGHT, WIDTH, _font_dirs, _render_to_file
+
+    out = tmp_path / "hero.png"
+    _render_to_file(THEMED_SVG.encode(), str(out), _font_dirs())
+    im = Image.open(out).convert("RGB")
+    assert im.getpixel((WIDTH // 2, HEIGHT // 2)) == (0xB4, 0x8E, 0xAD)   # .ac
+    assert im.getpixel((10, 10)) == (0x2E, 0x34, 0x40)                     # .pb
