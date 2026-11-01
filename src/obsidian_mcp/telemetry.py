@@ -16,11 +16,13 @@ because an observability backend is unreachable.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import logging
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Awaitable, Callable, TypeVar
 
 log = logging.getLogger(__name__)
@@ -135,8 +137,26 @@ def _safe_key(key: str) -> str:
 # Serialises the tools that write notes. Tools run in worker threads (see
 # instrumented), so without this two clients patching one note could interleave
 # their read-modify-write and silently lose an edit -- something the single
-# event loop used to prevent by accident. Held for milliseconds per call.
-_WRITE_LOCK = threading.Lock()
+# event loop used to prevent by accident.
+#
+# A single-thread executor rather than a lock taken inside the shared pool:
+# writes waiting their turn sit in this executor's queue, not in pool threads,
+# so a slow vault_move with others queued behind it cannot exhaust the default
+# executor and stop reads from starting.
+_WRITE_THREAD_PREFIX = "vault-write"
+_WRITES = ThreadPoolExecutor(max_workers=1, thread_name_prefix=_WRITE_THREAD_PREFIX)
+
+
+def run_exclusive(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Run ``fn`` in turn with the note-writing tools, from a worker thread.
+
+    For a non-exclusive tool that needs one step to see the vault between
+    writes, never in the middle of one (publish_site's note snapshot). Blocks
+    the calling worker thread, not the event loop.
+    """
+    if threading.current_thread().name.startswith(_WRITE_THREAD_PREFIX):
+        return fn(*args, **kwargs)  # already in turn; queueing would deadlock
+    return _WRITES.submit(contextvars.copy_context().run, fn, *args, **kwargs).result()
 
 
 def instrumented(
@@ -150,9 +170,10 @@ def instrumented(
     after 30 s while the scheduled routine and Desktop both needed the vault. So
     each call runs in a worker thread and the loop keeps serving everyone else.
 
-    `exclusive` (default: the same as `mutation`) takes the write lock.
-    publish_site passes exclusive=False: it only reads the vault, holds its own
-    publish lock, and can take minutes -- it must not stall note writes.
+    `exclusive` (default: the same as `mutation`) runs the call on the single
+    write thread, in turn with every other write. publish_site passes
+    exclusive=False: it only reads the vault, holds its own publish lock, and
+    can take minutes -- it must not stall note writes.
 
     Applied *under* @mcp.tool so the SDK still sees the real signature through
     functools.wraps -- the tool's JSON schema is generated from the wrapped
@@ -164,9 +185,6 @@ def instrumented(
         def run(args: tuple, kwargs: dict) -> Any:
             # A fresh loop per call in the worker thread: tool bodies await
             # nothing today, but this stays correct if one ever does.
-            if takes_lock:
-                with _WRITE_LOCK:
-                    return asyncio.run(fn(*args, **kwargs))
             return asyncio.run(fn(*args, **kwargs))
 
         @functools.wraps(fn)
@@ -175,6 +193,9 @@ def instrumented(
             status = "ok"
             error_kind = None
             try:
+                if takes_lock:
+                    call = functools.partial(contextvars.copy_context().run, run, args, kwargs)
+                    return await asyncio.get_running_loop().run_in_executor(_WRITES, call)
                 return await asyncio.to_thread(run, args, kwargs)
             except Exception as exc:
                 status = "error"

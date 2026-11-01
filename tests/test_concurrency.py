@@ -95,6 +95,24 @@ def test_writes_proceed_during_a_long_publish() -> None:
     assert counter["value"] == 1
 
 
+def test_queued_writes_do_not_starve_reads() -> None:
+    """Copilot on PR #7: writes waiting for their turn must not occupy pool
+    threads, or enough of them behind a slow write stop reads from starting."""
+    mcp, counter = _server()
+
+    async def scenario():
+        writes = [asyncio.create_task(mcp.call_tool("increment", {})) for _ in range(40)]
+        await asyncio.sleep(0.1)  # a write is running, the rest are queued
+        start = time.perf_counter()
+        await mcp.call_tool("fast_read", {})
+        read = time.perf_counter() - start
+        await asyncio.gather(*writes)
+        return read
+
+    assert asyncio.run(scenario()) < 0.3
+    assert counter["value"] == 40
+
+
 def test_publish_site_is_registered_non_exclusive() -> None:
     import inspect
 
