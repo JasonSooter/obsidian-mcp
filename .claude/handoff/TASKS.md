@@ -43,6 +43,9 @@ None set. Pick from the register.
   selects them there and clicks delete, runs Syncer's orphan clean with `force`, or turns on
   "Automatically clean orphaned media" (off by default; it also skips itself when more than
   80% of media look orphaned). So: leave that setting off and don't bulk-delete Unlinked media.
+- **The map routine publishes the site itself** (`publish_site` at the end of each run; site commits authored "obsidian-mcp: Map routine …"). Anything that only needs a publish reaches the site on its next run; no separate publish is needed.
+- **Where to check the routine:** `Places/_Map Scan Progress.md` is ~1.3 MB, so `vault_read` spills it to a file; read just `.frontmatter.run_lock` / `last_run` with `jq`. An empty `run_lock` means no run is in progress. The server's audit log is `/state/audit.log` inside the `obsidian-mcp` container (one JSON line per write, with `tool`).
+- **`publish_site` result shape:** attachment results are nested: `changes.attachments.{added,updated,removed,missing}` and their `*_count`; there is no `changes.missing`.
 
 ---
 
@@ -55,6 +58,7 @@ None set. Pick from the register.
   you keep ignored (`.git/info/exclude`) overwrites the ignored copy without warning. That
   is how a session-local register at this file's path was lost on 2026-11-01. Never keep
   durable state at a path the repo might later track.
+- **Copilot reviews only the commit a PR had when its review started.** Commits pushed afterwards are not re-reviewed (#18: the first round's flaw survived into the second commit). Re-check later commits yourself before merging.
 
 ---
 
