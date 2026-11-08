@@ -6,6 +6,7 @@ Earth, are split at ±180°.
 from __future__ import annotations
 
 import math
+import re
 
 import pytest
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon, box
@@ -264,3 +265,17 @@ def test_polar_map_centred_on_lng_0_has_no_seam_at_180(synthetic, monkeypatch) -
     shapes = g.polar_map(-89.5, 0, 8, (200, 90, 800, 360), 600, 244, 154, None, None)
     (land,) = [s for s in shapes if 'class="ld"' in s]
     assert land.count("M") == 1
+
+
+def test_world_scale_inset_draws_the_world_once(synthetic) -> None:
+    """At half 20 the inset view is ~700° wide; qv() would fetch two copies of the world (South Pacific Gyre:
+    186 KB, 5 minutes). It is clamped to one world round the pin, and keeps only land and borders."""
+    g = synthetic
+    out = g.inset(-48.88, -123.39, 804, 106, 180, 112, 140, box(-160, -60, -90, -38), False)
+    lands = re.findall(r'<path class="ld" d="([^"]*)"', out)
+    assert sum(d.count("M") for d in lands) <= 3      # three land blocks in the synthetic world, each once
+    assert 'class="rv"' not in out and 'class="lk"' not in out
+    assert len(re.findall(r'<path class="b0"', out)) <= 1   # borders in one path
+    # an ordinary inset (half_r 7) is untouched: rivers and lakes stay
+    near = g.inset(65, -170, 804, 106, 180, 112, 7, box(-180, 62, -160, 68), False)
+    assert 'class="rv"' in near
