@@ -250,3 +250,17 @@ def test_topo_keeps_a_country_with_an_emptied_polygon(tmp_path) -> None:
     patched = box(-1, -1, 2, 2)
     (got,) = g._topo(str(fn), patch=lambda o: patched if o["id"] == "RUS" else None)
     assert got is patched
+
+
+def test_polar_map_centred_on_lng_0_has_no_seam_at_180(synthetic, monkeypatch) -> None:
+    """A pole view centred on lng 0 spans exactly ±180°, so qv() shifts nothing: the land Natural Earth
+    splits at 180° must still be joined, or its coast stroke draws the 180th meridian."""
+    g = synthetic
+    # The far piece stops a hair short of -180°: float noise at the split that make_valid would not catch.
+    layers = {**g.NE10, "land": [(box(150, -90, 180, -70), {}), (box(-180 + 1e-7, -90, -150, -70), {})],
+              "lakes": [], "rivers": [], "adm0": []}
+    monkeypatch.setattr(g, "NE10", layers)
+    monkeypatch.setattr(g, "TREES", {k: STRtree([x for x, _ in v]) for k, v in layers.items()})
+    shapes = g.polar_map(-89.5, 0, 8, (200, 90, 800, 360), 600, 244, 154, None, None)
+    (land,) = [s for s in shapes if 'class="ld"' in s]
+    assert land.count("M") == 1
