@@ -9,7 +9,7 @@ and a summary.json with the generator's result line per case.
     HERO_DATA=/path/to/hero/data uv run python scripts/render_hero_cases.py OUTDIR \
         [--set cases|baseline|all] [--http-cache DIR] [--only SUBSTRING]
 
-HERO_DATA must hold ne10.pkl, cities.json and world_{50,110}m.json (built by
+HERO_DATA must hold ne10.pkl, cities.json and world_110m.json (built by
 `python -m obsidian_mcp.hero.generator --setup`, or copied from the server).
 --http-cache stores Nominatim and Wikipedia responses on disk, so a second run
 sees the same inputs as the first and its SVGs can be compared byte for byte.
