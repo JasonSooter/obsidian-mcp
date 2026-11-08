@@ -155,7 +155,7 @@ def setup():
     """Download and build everything under DATA. Idempotent: present files are kept."""
     os.makedirs(DATA, exist_ok=True)
     src = os.path.join(DATA, "ne10src"); os.makedirs(src, exist_ok=True)
-    for name in ("world_50m.json", "world_110m.json"):
+    for name in ("world_110m.json",):
         fn = os.path.join(DATA, name)
         if not os.path.exists(fn):
             _write_atomic(fn, _npm_member("sane-topojson", "4.0.0", f"dist/{name}"))
@@ -179,6 +179,9 @@ def setup():
 warnings.filterwarnings("ignore")
 from shapely.geometry import shape, box, LineString, MultiLineString, Polygon, MultiPolygon, Point
 from shapely.strtree import STRtree
+from shapely.affinity import translate
+import shapely
+from obsidian_mcp.hero import geo
 
 W, H = 1200, 630
 FONT = "'Space Grotesk','Helvetica Neue',Helvetica,Arial,sans-serif"
@@ -248,14 +251,40 @@ def load():
         LMC = {}
 
 
-@functools.lru_cache(maxsize=None)
-def C50():
-    return _topo(os.path.join(DATA, "world_50m.json"))
-
-
 
 def q(layer, area):
     return [NE10[layer][i] for i in TREES[layer].query(area)]
+
+
+def qv(layer, area):
+    """q() for an area in continuous longitude (geo.py): one reaching past ±180° also gets the
+    features on the far side of the line, clipped and shifted by 360° into the area's range.
+    An area inside [-180, 180] gets exactly q()."""
+    if not geo.crosses(area):
+        return q(layer, area)
+    out = []
+    for part, s in geo.world_copies(area):
+        for g, p in q(layer, part):
+            if s:
+                g = translate(g.intersection(part), s, 0)
+                if g.is_empty: continue
+                if p.get("x") is not None: p = {**p, "x": p["x"] + s}
+            out.append((g, p))
+    return out
+
+
+def land(view):
+    """Land polygons in a view. Across ±180° the pieces Natural Earth splits at the line are
+    merged, so no coastline stroke runs down the 180th meridian."""
+    if not geo.crosses(view):
+        return [g for g, _ in q("land", view)]
+    u = shapely.unary_union([g.intersection(view) for g, _ in qv("land", view)])
+    return [] if u.is_empty else [u]
+
+
+def wrapper(view, center):
+    """Longitude -> continuous longitude for points tested against `view` (identity unless it crosses ±180°)."""
+    return (lambda x: geo.wrap_lng(x, center)) if geo.crosses(view) else (lambda x: x)
 
 
 def norm(s):
@@ -368,11 +397,11 @@ def basemap(P, view, half, A, boxes, lite):
     va = view.area
     path = lambda d, c: S.append(f'<path class="{c}" d="{d}"/>') if d else None
     # land (10m below ~3 degrees half-height, 50m-ish via 10m simplified above)
-    for g, _ in q("land", view):
+    for g in land(view):
         path(d_of(g, P, view), "ld")
     # regions: deserts / mountains / wetlands get a texture
     regs = []
-    for g, p in q("regions", view):
+    for g, p in qv("regions", view):
         c = (p.get("c") or "").lower()
         cls = "ds" if c in ("desert",) else "mt" if c in ("range/mtn", "foothills", "plateau") else "wt" if c in ("wetlands", "delta") else None
         vis = g.intersection(view)
@@ -380,13 +409,13 @@ def basemap(P, view, half, A, boxes, lite):
         if cls: path(d_of(vis, P, view, tol=TOL[0] * 2), cls)
         regs.append((vis.area / va, vis, p))
     if half < 3 and lite < 3:
-        for g, _ in q("urban", view):
+        for g, _ in qv("urban", view):
             path(d_of(g, P, view), "ur")
-    for g, p in q("lakes", view):
+    for g, p in qv("lakes", view):
         if half > 4 and p["r"] > 6: continue
         path(d_of(g, P, view), "lk")
     rivers = []
-    for g, p in q("rivers", view):
+    for g, p in qv("rivers", view):
         if half > 6 and p["r"] > 4: continue
         if half > 2.5 and p["r"] > 7: continue
         d = d_of(g, P, view, False)
@@ -395,16 +424,16 @@ def basemap(P, view, half, A, boxes, lite):
             S.append(f'<path class="rv" stroke-width="{w}" d="{d}"/>')
             rivers.append((g, p))
     if half < 5 and lite < 2:
-        for g, _ in q("adm1", view):
+        for g, _ in qv("adm1", view):
             path(d_of(g, P, view, False), "b1")
-    for g, _ in q("adm0", view):
+    for g, _ in qv("adm0", view):
         path(d_of(g, P, view, False), "b0")
     if half < 2 and lite < 1:
-        for g, p in q("rail", view):
+        for g, p in qv("rail", view):
             path(d_of(g, P, view, False), "rr")
     if half < 6:
         minor = [] if lite else None
-        for g, p in q("roads", view):
+        for g, p in qv("roads", view):
             major = p.get("t") in ("Major Highway", "Beltway")
             if not major and (half > 2.5 or lite >= 1): continue
             if lite >= 3: continue
@@ -460,7 +489,7 @@ def labels_rivers(P, view, rivers, boxes, A):
 
 def labels_points(P, view, boxes, half):
     out = []
-    pk = sorted(q("peaks", view), key=lambda r: -(r[1].get("e") or 0))
+    pk = sorted(qv("peaks", view), key=lambda r: -(r[1].get("e") or 0))
     for g, p in pk[:4]:
         if not view.contains(g) or not p.get("n"): continue
         x, y = P(g.x, g.y)
@@ -469,13 +498,13 @@ def labels_points(P, view, boxes, half):
         w = tw(t, 12, 0.55) + 14
         if boxes.take((x - 6, y - 8, x + w, y + 8)):
             out.append(f'<path class="pk" d="M{x-5:.0f} {y+4:.0f}l5-9 5 9z"/><text class="pt" x="{x+9:.0f}" y="{y+4:.0f}">{html.escape(t)}</text>')
-    for g, p in q("regpts", view):
+    for g, p in qv("regpts", view):
         if not view.contains(g) or not p.get("n"): continue
         x, y = P(g.x, g.y); t = p["n"]; w = tw(t, 12, 0.55)
         if boxes.take((x - w / 2, y - 10, x + w / 2, y + 4)):
             out.append(f'<text class="pt" x="{x:.0f}" y="{y:.0f}" text-anchor="middle" font-style="italic">{html.escape(t)}</text>')
     va = view.area
-    for g, p in sorted(q("marine", view), key=lambda r: r[1]["r"]):
+    for g, p in sorted(qv("marine", view), key=lambda r: r[1]["r"]):
         vis = g.intersection(view)
         if vis.is_empty or vis.area < va * 0.05 or not p.get("n"): continue
         rp = vis.representative_point(); x, y = P(rp.x, rp.y)
@@ -483,7 +512,7 @@ def labels_points(P, view, boxes, half):
         if boxes.take((x - w / 2, y - 12, x + w / 2, y + 4)):
             out.append(f'<text class="ml" x="{x:.0f}" y="{y:.0f}" text-anchor="middle">{html.escape(t)}</text>')
     if half > 0.5:
-        for g, p in sorted(q("countries", view), key=lambda r: r[1]["r"]):
+        for g, p in sorted(qv("countries", view), key=lambda r: r[1]["r"]):
             if p.get("x") is None or not p.get("n"): continue
             if not view.contains(Point(p["x"], p["y"])): continue
             x, y = P(p["x"], p["y"]); t = p["n"].upper(); w = tw(t, 13, 0.62, 3)
@@ -495,14 +524,15 @@ def labels_points(P, view, boxes, half):
 def towns(P, view, half, boxes, exclude, settlement, maxn=10):
     x0, y0, x1, y1 = view.bounds
     minpop = 2000 if half < 0.15 else 8000 if half < 0.35 else 20000 if half < 0.8 else 80000 if half < 2 else 400000 if half < 6 else 2000000
-    cand = sorted((c for c in CITIES if y0 < c[1] < y1 and x0 < c[2] < x1 and c[3] >= minpop), key=lambda c: -c[3])
+    wx = wrapper(view, P.lng)
+    cand = sorted((c for c in CITIES if y0 < c[1] < y1 and x0 < wx(c[2]) < x1 and c[3] >= minpop), key=lambda c: -c[3])
     cx, cy = P(P.lng, P.lat)
     out, seen = [], set(exclude)
     for nm, la, ln, pop, cc in cand:
         if len(out) >= maxn: break
         k = norm(nm)
         if not k or k in seen: continue
-        x, y = P(ln, la)
+        x, y = P(wx(ln), la)
         if settlement and math.hypot(x - cx, y - cy) < 70: continue   # districts of the place itself
         big = pop >= (minpop * 8)
         fs = 15 if big else 13
@@ -679,7 +709,7 @@ def _lm_source(c):
 def ne_points(P, view, boxes, excl, half):
     out = []
     if half > 1.5: return out
-    for g, p in sorted(q("airports", view), key=lambda r: r[1]["r"]):
+    for g, p in sorted(qv("airports", view), key=lambda r: r[1]["r"]):
         if not view.contains(g) or not p.get("n"): continue
         x, y = P(g.x, g.y); t = p["n"] if "airport" in p["n"].lower() else p["n"] + " Airport"
         if norm(t) in excl: continue
@@ -692,11 +722,13 @@ def ne_points(P, view, boxes, excl, half):
 
 def landmarks(P, view, boxes, excl, wl, maxn=9):
     out, pos = [], []
+    wx = wrapper(view, P.lng)
     for t, la, lo, ln, ty in wl:
         if len(out) >= maxn: break
         s = re.sub(r"\s*\([^)]*\)$", "", t)
         s = re.sub(r",\s[^,]+$", "", s)
         k = norm(s) or s.lower()
+        lo = wx(lo)
         if k in excl or len(s) > 42 or not view.contains(Point(lo, la)): continue
         x, y = P(lo, la)
         if any(abs(x - a) < 6 and abs(y - b) < 6 for a, b in pos): continue
@@ -718,16 +750,16 @@ def inset(lat, lng, x, y, w, h, half_r, main_view, guess_hl):
     v2 = P2.view(w / 2 + 4, h / 2 + 4)
     t = 2.4
     S = [f'<rect class="ps" x="{x}" y="{y}" width="{w}" height="{h}"/>']
-    for g, _ in q("land", v2): S.append(f'<path class="ld" d="{d_of(g, P2, v2, tol=t)}"/>')
-    for g, p in q("regions", v2):
+    for g in land(v2): S.append(f'<path class="ld" d="{d_of(g, P2, v2, tol=t)}"/>')
+    for g, p in qv("regions", v2):
         c = (p.get("c") or "").lower()
         cls = "ds" if c == "desert" else "mt" if c in ("range/mtn", "foothills", "plateau") else None
         if cls: S.append(f'<path class="{cls}" d="{d_of(g, P2, v2, tol=t*2)}"/>')
-    for g, p in q("lakes", v2):
+    for g, p in qv("lakes", v2):
         if p["r"] <= 7: S.append(f'<path class="lk" d="{d_of(g, P2, v2, tol=t)}"/>')
-    for g, p in q("rivers", v2):
+    for g, p in qv("rivers", v2):
         if p["r"] <= 7: S.append(f'<path class="rv" stroke-width="1.2" d="{d_of(g, P2, v2, False, tol=t)}"/>')
-    for g, _ in q("adm0", v2): S.append(f'<path class="b0" d="{d_of(g, P2, v2, False, tol=t)}"/>')
+    for g, _ in qv("adm0", v2): S.append(f'<path class="b0" d="{d_of(g, P2, v2, False, tol=t)}"/>')
     b = main_view.bounds
     (ax, ay), (bx, by) = P2(b[0], b[3]), P2(b[2], b[1])
     if abs(bx - ax) > 6:
@@ -782,6 +814,76 @@ def region_half(rec, lat, lng):
     return min(max((n_ - s_) * 0.6, 1.0), 24)
 
 
+def _pd(geom, closed=True):
+    """SVG path data for a geometry already in pixels."""
+    out = []
+    if closed:
+        for p in geo.areas(geo.oriented(geom)):
+            out.append(_ring(p.exterior.coords, True)); out.extend(_ring(r.coords, True) for r in p.interiors)
+    else:
+        out = [_ring(l.coords, False) for l in geo.lines(geom)]
+    return "".join(out)
+
+
+def polar_map(lat, lng, half, panel, mx, my, hpx, g, par, lite=0):
+    """The map panel's shapes for the polar (orthographic) view.
+
+    Everything is clipped on the sphere to a cap round the pin that covers the panel and stays in the
+    near hemisphere, then projected, then clipped to the panel in pixels and simplified there. Land
+    pieces that Natural Earth splits at ±180° are merged after projecting, so neither a seam nor a
+    wrong-way fill can appear; area fills are wound so SVG's nonzero rule keeps holes (lakes) open.
+    """
+    px, py, pw, ph = panel
+    R = hpx / math.radians(max(half, 2))
+    far = math.hypot(max(mx - px, px + pw - mx), max(my - py, py + ph - my)) + 24
+    rad = min(math.degrees(math.asin(min(1.0, far / R))) + 2, 84.0)
+    cp = geo.cap(lat, lng, rad)
+    f = geo.ortho_xy(lat, lng, mx, my, R)
+    frame = box(px - 24, py - 24, px + pw + 24, py + ph + 24)
+    tol = TOL[0]
+    pre = math.degrees(tol / R) * 0.5   # simplify in degrees before projecting, finer than in pixels
+    seg = math.degrees(16 / R)          # then re-densify: a straight edge in lon/lat (a parallel, a
+    def proj(geom):                     # border along a meridian) is a curve on the globe
+        geom = geom.intersection(cp)
+        if geom.is_empty: return geom
+        return geo.project(shapely.segmentize(geom.simplify(pre), seg), f, frame)
+    S = []
+    # Merge the land on both sides of ±180° in lon/lat, before any simplifying: simplified separately,
+    # the two halves' shared edge no longer matches and leaves a sliver down the 180th meridian.
+    ld = shapely.unary_union([gg.intersection(cp) for gg, _ in qv("land", cp)])
+    ld = proj(ld).simplify(tol) if not ld.is_empty else ld
+    if not ld.is_empty:
+        S.append(f'<path class="ld" d="{_pd(ld)}"/>')
+    min_area = 6 * tol * tol   # lakes smaller than this many square pixels are noise at this scale
+    for gg, p in qv("lakes", cp):
+        if p["r"] > (6 if half > 4 or lite >= 2 else 8): continue
+        lk = proj(gg).simplify(tol)
+        if lk.area < min_area: continue
+        d = _pd(lk)
+        if d: S.append(f'<path class="lk" d="{d}"/>')
+    for gg, p in qv("rivers", cp):
+        if p["r"] > (3 if lite >= 2 else 4): continue
+        d = _pd(proj(gg).simplify(tol), False)
+        if d: S.append(f'<path class="rv" stroke-width="{2.2 if p["r"] <= 3 else 1.7}" d="{d}"/>')
+    b0 = "".join(_pd(proj(gg).simplify(tol), False) for gg, _ in qv("adm0", cp))
+    if b0: S.append(f'<path class="b0" d="{b0}"/>')
+    par_lines = []
+    for la in (-80, -70, -60, 60, 70, 80):
+        ln = LineString([(lng + lo, la) for lo in range(-180, 181, 2)])
+        d = _pd(proj(ln).simplify(tol), False)
+        if d: par_lines.append(d)
+    if par_lines: S.append(f'<path class="b1" d="{"".join(par_lines)}"/>')
+    if R < far:   # the whole globe fits in the panel: mark its edge
+        S.append(f'<circle class="go" cx="{mx:.0f}" cy="{my:.0f}" r="{R:.0f}"/>')
+    if par is not None and (par.bounds[3] - par.bounds[1]) > half * 0.08:
+        d = _pd(proj(par).simplify(tol))
+        if d: S.append(f'<path class="pa" d="{d}"/>')
+    if g is not None:
+        d = _pd(proj(g).simplify(tol))
+        if d: S.append(f'<path class="ol" d="{d}"/>')
+    return S
+
+
 def make(job, outdir, lite=0):
     name, lat, lng = job["name"], float(job["lat"]), float(job["lng"])
     guess = job.get("confidence") in ("inferred", "best-guess")
@@ -790,13 +892,13 @@ def make(job, outdir, lite=0):
     half_set = job.get("half", job.get("zoom"))
     half_set = min(max(float(half_set), 0.003), 30.0) if half_set not in (None, "") else None
     rec = nominatim(job.get("query"), job.get("osm"))
-    if rec and (abs(float(rec.get("lat", lat)) - lat) > 1.5 or abs(float(rec.get("lon", lng)) - lng) > 1.5):
+    if rec and (abs(float(rec.get("lat", lat)) - lat) > 1.5 or abs(geo.dlng(float(rec.get("lon", lng)), lng)) > 1.5):
         g0 = poly(rec)
         if g0 is None or g0.distance(Point(lng, lat)) > 0.05: rec = None   # matched some other place of that name
-    g = poly(rec)
+    g = geo.unwrap(poly(rec), lng)   # an outline across 180° comes back in parts on both sides
     if g is not None and g.distance(Point(lng, lat)) > 0.02:
         g = None
-    par = poly(nominatim(job.get("parent"))) if job.get("parent") else None
+    par = geo.unwrap(poly(nominatim(job.get("parent"))), lng) if job.get("parent") else None
     if par is not None and par.distance(Point(lng, lat)) > 0.2: par = None
     rank = int((rec or {}).get("place_rank", 30))
     gb = g
@@ -828,13 +930,13 @@ def make(job, outdir, lite=0):
                     wl = []; break
                 WIKI_PRE[f"{lat:.3f},{lng:.3f}"] = wl
             k = max(math.cos(math.radians(lat)), 0.2)
-            nwl = sum(1 for t, la, lo, *_ in wl if abs(la - lat) < half and abs(lo - lng) * k < half * 2.4 and norm(t) not in excl)
-            ntw = sum(1 for c in CITIES if abs(c[1] - lat) < half and abs(c[2] - lng) * k < half * 2.4 and c[3] >= 1000)
+            nwl = sum(1 for t, la, lo, *_ in wl if abs(la - lat) < half and abs(geo.dlng(lo, lng)) * k < half * 2.4 and norm(t) not in excl)
+            ntw = sum(1 for c in CITIES if abs(c[1] - lat) < half and abs(geo.dlng(c[2], lng)) * k < half * 2.4 and c[3] >= 1000)
             if nwl + ntw >= 5 or half >= 2.0: break
             half = min(half * 2.5, 0.3 if nwl + ntw >= 2 else 2.0)
         # dense places (central London): the nearest articles cluster round the pin, so zoom in to spread them out
         spots = {(round(la, 3), round(lo, 3)) for t, la, lo, *_ in wl if norm(t) not in excl}
-        ds = sorted(math.hypot(la - lat, (lo - lng) * k) for la, lo in spots)
+        ds = sorted(math.hypot(la - lat, geo.dlng(lo, lng) * k) for la, lo in spots)
         if len(ds) >= 40:
             r80 = ds[int(len(ds) * 0.8)]
             if r80 * 0.9 < half:
@@ -848,43 +950,20 @@ def make(job, outdir, lite=0):
     gx, gy, gr = px + 58, py + 58, 40
     boxes.add((px, py, gx + gr + 12, gy + gr + 40))   # globe + scale bar
     ix, iy, iw, ih = px + pw - 196, py + 16, 180, 112
-    show_inset = not regional
+    polar = (abs(lat) > 64 and half > 1.5) or pole
+    show_inset = not regional and not polar   # a polar view is already regional; its inset would be a distorted world map
     if show_inset: boxes.add((ix - 10, iy - 10, ix + iw + 10, iy + ih + 10))
     lx, ly, lr = px + pw - 106, py + 210 if show_inset else py + 110, 72
     big = g is not None and gh * P.sc > 10
     use_lens = g is not None and not big and gh > 0.003
     if use_lens: boxes.add((lx - lr - 12, ly - lr - 12, lx + lr + 12, ly + lr + 26))
     A = []
-    polar = (abs(lat) > 64 and half > 1.5) or pole
     if polar:   # equirectangular breaks down near the poles: draw the area on an orthographic globe instead
-        R = hpx / math.radians(max(half, 2))
-        f = ortho(lat, lng, mx, my, R)
-        def od(geom):
-            out = []
-            for p in (list(geom.geoms) if hasattr(geom, "geoms") else [geom]):
-                if p.geom_type != "Polygon": continue
-                pts = [f(x, y) for x, y in p.exterior.coords]
-                if not any(v for _, _, v in pts): continue
-                ls = LineString([(a, b) for a, b, _ in pts]).simplify(TOL[0])
-                if ls.length > 8: out.append(_ring(list(ls.coords), True))
-            return "".join(out)
-        S = [f'<circle class="ld" cx="{mx}" cy="{my}" r="{R:.0f}" style="fill:var(--sea)"/>']
-        for gg in C50():
-            if gg.is_empty: continue
-            c = gg.centroid
-            if abs(c.y - lat) < 60 or gg.intersects(Point(lng, lat).buffer(30)):
-                d = od(gg.simplify(0.08))
-                if d: S.append(f'<path class="ld" d="{d}"/>')
-        for la in (-80, -70, -60, 60, 70, 80):
-            pts = [f(lo, la) for lo in range(-180, 181, 6)]
-            if any(v for *_, v in pts): S.append(f'<path class="b1" d="{_ring([(a, b) for a, b, v in pts], False)}"/>')
-        if g is not None:
-            d = od(g.simplify(0.08))
-            if d: S.append(f'<path class="ol" d="{d}"/>')
+        S = polar_map(lat, lng, half, (px, py, pw, ph), mx, my, hpx, g, par, lite)
         regs, rivers, big, use_lens = [], [], False, False
     else:
         S, regs, rivers = basemap(P, view, half, A, boxes, lite)
-    if par is not None and (par.bounds[3] - par.bounds[1]) > half * 0.08:
+    if par is not None and not polar and (par.bounds[3] - par.bounds[1]) > half * 0.08:
         d = d_of(par, P, view)
         if d: S.append(f'<path class="pa" d="{d}"/>')
     if g is not None and not use_lens and not polar:
@@ -924,9 +1003,9 @@ def make(job, outdir, lite=0):
         Q = Proj(lat, lng, lhalf, lx, ly, lr * 0.85)
         lv = Q.view(lr + 10, lr + 10)
         inner = []
-        for gg, _ in q("land", lv): inner.append(f'<path class="ld" d="{d_of(gg, Q, lv)}"/>')
-        for gg, _ in q("lakes", lv): inner.append(f'<path class="lk" d="{d_of(gg, Q, lv)}"/>')
-        for gg, _ in q("rivers", lv): inner.append(f'<path class="rv" stroke-width="2.4" d="{d_of(gg, Q, lv, False)}"/>')
+        for gg in land(lv): inner.append(f'<path class="ld" d="{d_of(gg, Q, lv)}"/>')
+        for gg, _ in qv("lakes", lv): inner.append(f'<path class="lk" d="{d_of(gg, Q, lv)}"/>')
+        for gg, _ in qv("rivers", lv): inner.append(f'<path class="rv" stroke-width="2.4" d="{d_of(gg, Q, lv, False)}"/>')
         if par is not None:
             inner.append(f'<path class="pa" d="{d_of(par, Q, lv)}"/>')
         inner.append(f'<path class="ol" d="{d_of(g, Q, lv)}"/>')
@@ -1019,6 +1098,8 @@ def split_theme(svg, theme):
 
 
 TARGET_BYTES = 32000   # a target, not a cap: the coarsest retry is kept even when it is larger
+# (simplification tolerance in px, lite level) per attempt, finest first
+RETRIES = ((1.2, 0), (2.0, 0), (2.0, 1), (3.2, 2), (5.0, 3), (8.0, 3))
 
 
 def run(jobs, out):
@@ -1028,7 +1109,7 @@ def run(jobs, out):
     for i, j in enumerate(jobs):
         try:
             t0 = time.time()
-            for t, lite in ((1.2, 0), (2.0, 0), (2.0, 1), (3.2, 2), (5.0, 3), (8.0, 3)):
+            for t, lite in RETRIES:
                 TOL[0] = t
                 svg, r = make(j, out, lite)
                 if len(svg.encode()) <= TARGET_BYTES: break
