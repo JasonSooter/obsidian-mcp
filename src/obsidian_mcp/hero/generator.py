@@ -846,6 +846,25 @@ def smaller_than_town(rec, job):
     return c in SMALL_CLASSES or (c == "place" and t in SMALL_PLACES) or rec.get("addresstype") in SMALL_PLACES
 
 
+def outline_mismatch(rec, job, lat):
+    """Nominatim answered with the place's parent: a venue was asked for, a settlement or admin area came back
+    (Logan International Airport -> the City of Boston), or an outline far larger than such a place can be."""
+    if not rec or not VENUE.search(venue_text(job)):
+        return False
+    c, t = rec.get("class"), rec.get("type")
+    if (c == "boundary" and t == "administrative") or (c == "place" and t in (
+            "city", "town", "village", "municipality", "county", "state", "region", "province", "country",
+            "suburb", "quarter", "borough")):
+        return True
+    g = poly(rec)
+    if g is None:
+        return False
+    km2 = g.area * 111.32 ** 2 * max(math.cos(math.radians(lat)), 0.05)
+    big = 150 if re.search(r"\b(airport|aerodrome|airfield|port|harbou?r|campus|university|zoo|cemetery)\b",
+                           venue_text(job), re.I) else 25
+    return km2 > big
+
+
 def area_name(lat, lng):
     """Country or sea under the pin, from Natural Earth: the subtitle when reverse geocoding finds nothing."""
     pt = Point(lng, lat)
@@ -947,6 +966,7 @@ def make(job, outdir, lite=0):
     if rec and (abs(float(rec.get("lat", lat)) - lat) > 1.5 or abs(geo.dlng(float(rec.get("lon", lng)), lng)) > 1.5):
         g0 = poly(rec)
         if g0 is None or g0.distance(Point(lng, lat)) > 0.05: rec = None   # matched some other place of that name
+    if outline_mismatch(rec, job, lat): rec = None
     g = geo.unwrap(poly(rec), lng)   # an outline across 180° comes back in parts on both sides
     if g is not None and g.distance(Point(lng, lat)) > 0.02:
         g = None

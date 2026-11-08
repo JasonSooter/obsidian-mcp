@@ -240,3 +240,29 @@ def test_no_generator_starts_once_stopping(tmp_path: Path) -> None:
 def test_pin_label_true_is_accepted_now_that_venues_default_to_none() -> None:
     assert validate_jobs([{**JOB, "pin_label": True}])[0]["pin_label"] is True
 
+
+def test_place_heuristics_without_map_data() -> None:
+    from obsidian_mcp.hero import generator as g
+
+    # smaller than a town: no surrounding-city label by default
+    assert g.smaller_than_town({"class": "leisure", "type": "sports_centre"}, {"name": "Harlem YMCA"})
+    assert g.smaller_than_town({"class": "place", "type": "suburb"}, {"name": "Ybor City"})
+    assert g.smaller_than_town({"class": "railway", "type": "station"}, {"name": "Zürich HB"})
+    assert g.smaller_than_town(None, {"name": "YMCA on 125th Street"})   # the name alone says so
+    assert not g.smaller_than_town({"class": "natural", "type": "peak"}, {"name": "Mont Blanc"})
+    assert not g.smaller_than_town(None, {"name": "Beringia"})
+    # admin units below city level
+    for v in ("Karimpur-I", "Misgav Regional Council", "Alamdanga Upazila", "Ust-Kamchatsky District", "okres Litoměřice"):
+        assert g.SUBCITY.search(v), v
+    for v in ("Boston", "Freiburg im Breisgau", "Kandahar", "Ivry-sur-Seine"):
+        assert not g.SUBCITY.search(v), v
+    # Nominatim answering with the parent instead of the place
+    job = {"name": "Logan International Airport", "query": "Logan International Airport, Boston"}
+    boston = {"class": "boundary", "type": "administrative", "addresstype": "city"}
+    assert g.outline_mismatch(boston, job, 42.36)
+    airport = {"class": "aeroway", "type": "aerodrome",
+               "geojson": {"type": "Polygon", "coordinates": [[[-71.03, 42.35], [-70.99, 42.35], [-70.99, 42.38], [-71.03, 42.38], [-71.03, 42.35]]]}}
+    assert not g.outline_mismatch(airport, job, 42.36)       # ~10 km²: an airport's size
+    huge = {**airport, "geojson": {"type": "Polygon", "coordinates": [[[-72, 42], [-70, 42], [-70, 43], [-72, 43], [-72, 42]]]}}
+    assert g.outline_mismatch(huge, job, 42.36)               # ~18,000 km²: not an airport
+    assert not g.outline_mismatch(boston, {"name": "Boston", "query": "Boston"}, 42.36)
