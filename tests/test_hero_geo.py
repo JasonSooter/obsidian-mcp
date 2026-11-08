@@ -232,3 +232,21 @@ def test_polar_map_has_no_seam_along_the_line(synthetic) -> None:
     assert len(land) == 1
     # one subpath per land mass in view (Chukotka block, Alaska block): the seam would add a third
     assert land[0].count("M") <= 2
+
+
+def test_topo_keeps_a_country_with_an_emptied_polygon(tmp_path) -> None:
+    """sane-topojson empties the polygons it cut at 180° ([]); _topo used to raise and drop the country."""
+    import json
+
+    from obsidian_mcp.hero import generator as g
+
+    topo = {"type": "Topology", "arcs": [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]],
+            "objects": {"countries": {"type": "GeometryCollection", "geometries": [
+                {"type": "MultiPolygon", "id": "RUS", "properties": {"ct": [0.5, 0.5]}, "arcs": [[], [[0]]]}]}}}
+    fn = tmp_path / "t.json"
+    fn.write_text(json.dumps(topo))
+    (got,) = g._topo(str(fn))
+    assert got.area == pytest.approx(1)
+    patched = box(-1, -1, 2, 2)
+    (got,) = g._topo(str(fn), patch=lambda o: patched if o["id"] == "RUS" else None)
+    assert got is patched

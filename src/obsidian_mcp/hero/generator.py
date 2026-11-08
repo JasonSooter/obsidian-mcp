@@ -202,7 +202,10 @@ ICON = {"book": ("#a3be8c", "#5e81ac", "Book"), "newspaper": ("#ebcb8b", "#d0877
         "podcast": ("#b48ead", "#5e81ac", "Podcast"), "video": ("#bf616a", "#b48ead", "Video")}
 
 
-def _topo(fn):
+def _topo(fn, patch=None):
+    """Country polygons from a TopoJSON file. sane-topojson leaves an empty polygon wherever it cut
+    out a piece crossing 180° (Russia's Chukotka, part of Fiji): those are skipped, and `patch(obj)`,
+    when given, may supply the whole country instead."""
     t = json.load(open(fn)); tr = t.get("transform"); arcs = []
     for a in t["arcs"]:
         x = y = 0; pts = []
@@ -223,7 +226,11 @@ def _topo(fn):
         ty = o.get("type")
         try:
             if ty == "Polygon": return Polygon(line(o["arcs"][0]), [line(r) for r in o["arcs"][1:]])
-            if ty == "MultiPolygon": return MultiPolygon([Polygon(line(p[0]), [line(r) for r in p[1:]]) for p in o["arcs"]])
+            if ty == "MultiPolygon":
+                if patch and not all(o["arcs"]):
+                    g = patch(o)
+                    if g is not None: return g
+                return MultiPolygon([Polygon(line(p[0]), [line(r) for r in p[1:]]) for p in o["arcs"] if p])
         except Exception:
             return None
         return None
@@ -241,7 +248,7 @@ def load():
     with open(os.path.join(DATA, "ne10.pkl"), "rb") as f:
         NE10 = pickle.load(f)
     TREES = {k: STRtree([g for g, _ in v]) for k, v in NE10.items()}
-    C110 = _topo(os.path.join(DATA, "world_110m.json"))
+    C110 = _topo(os.path.join(DATA, "world_110m.json"), patch=_ne10_country)
     with open(os.path.join(DATA, "cities.json")) as f:
         CITIES = json.load(f)  # [name, lat, lng, pop, cc]
     try:
@@ -254,6 +261,16 @@ def load():
 
 def q(layer, area):
     return [NE10[layer][i] for i in TREES[layer].query(area)]
+
+
+def _ne10_country(o):
+    """The Natural Earth 10m outline of a TopoJSON country (found by its label point), simplified for the globe."""
+    ct = (o.get("properties") or {}).get("ct")
+    if not ct: return None
+    pt = Point(*ct)
+    for g, _ in q("countries", pt):
+        if g.contains(pt): return g.simplify(0.1)
+    return None
 
 
 def qv(layer, area):
