@@ -42,8 +42,9 @@ def register(mcp: MCPServer, ctx: Context, heroes: HeroJobs) -> None:
         - `osm` (e.g. "W62208778"), `query` (Nominatim search for the outline),
           `parent` (Nominatim search for the parent place) -- each or null
         - overrides: `subtitle`, `aliases` (list), `half` or `zoom` (view
-          half-height in degrees), `pin_label: false` (no place label at the
-          pin), `region: true` (frame as a region or country)
+          half-height in degrees), `pin_label` (false: no town label at the
+          pin; true: label it even for a building, venue, street or
+          neighbourhood, which get none by default), `region: true` (frame as a region or country)
         - targets: `path` (default "Attachments/Places/<name>.svg"; must be an
           .svg under Attachments/Places/), `note` (default "Places/<name>.md";
           used by commit_heroes' set_image)
