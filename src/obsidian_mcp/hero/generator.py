@@ -922,7 +922,10 @@ def polar_map(lat, lng, half, panel, mx, my, hpx, g, par, lite=0):
     # Merge the land on both sides of ±180° in lon/lat, before any simplifying: simplified separately,
     # the two halves' shared edge no longer matches and leaves a sliver down the 180th meridian.
     ld = shapely.unary_union([gg.intersection(cp) for gg, _ in qv("land", cp)])
-    ld = proj(ld).simplify(tol) if not ld.is_empty else ld
+    # A cap centred on lng 0 spans exactly ±180°, so qv() shifts nothing and the pieces split at the line
+    # sit at opposite edges of lon/lat space; they only meet once projected. Snapping to a 0.05 px grid
+    # closes any float hairline between them and unions them, so no coast stroke runs down the meridian.
+    ld = shapely.set_precision(proj(ld), 0.05).simplify(tol) if not ld.is_empty else ld
     if not ld.is_empty:
         S.append(f'<path class="ld" d="{_pd(ld)}"/>')
     min_area = 6 * tol * tol   # lakes smaller than this many square pixels are noise at this scale
