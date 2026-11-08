@@ -769,7 +769,8 @@ def inset(lat, lng, x, y, w, h, half_r, main_view, guess_hl):
     if x1 - x0 > 360:   # a world-scale inset is wider than the world: one copy, centred on the pin
         v2 = box(lng - 180, y0, lng + 180, y1)
     world = half_r > 30
-    # A world-scale inset is a thumbnail: land and borders only (one path), at the retry tolerance.
+    # A world-scale inset is a thumbnail: land and borders only (one path), simplified at the retry tolerance
+    # but never finer than 4 px (about 1.7° of longitude here: finer detail is invisible and only adds bytes).
     t = max(4.0, TOL[0]) if world else 2.4
     S = [f'<rect class="ps" x="{x}" y="{y}" width="{w}" height="{h}"/>']
     for g in land(v2): S.append(f'<path class="ld" d="{d_of(g, P2, v2, tol=t)}"/>')
