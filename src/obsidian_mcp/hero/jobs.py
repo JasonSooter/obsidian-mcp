@@ -96,8 +96,6 @@ def validate_jobs(jobs: Any) -> list[dict[str, Any]]:
             raise ToolError(f"{where}.osm must look like 'W62208778' (N, W or R plus digits).")
         if job.get("aliases") is not None and not all(isinstance(a, str) for a in job["aliases"]):
             raise ToolError(f"{where}.aliases must be a list of strings.")
-        if job.get("pin_label") is True:
-            raise ToolError(f"{where}.pin_label only accepts false (omit it for the default).")
         path = job.get("path")
         if path is not None and not (path.startswith(HERO_FOLDER) and path.endswith(".svg") and ".." not in path):
             raise ToolError(f"{where}.path must be an .svg under {HERO_FOLDER}")

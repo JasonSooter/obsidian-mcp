@@ -109,7 +109,6 @@ def test_validate_jobs_rejects_what_would_go_wrong_later() -> None:
         ([{**JOB, "lat": 91}], "out of range"),
         ([{**JOB, "icon": "map"}], "icon"),
         ([{**JOB, "osm": "62208778"}], "osm"),
-        ([{**JOB, "pin_label": True}], "only accepts false"),
         ([{**JOB, "path": "Attachments/Other/V.svg"}], "Attachments/Places/"),
         ([{**JOB, "path": "Attachments/Places/../V.svg"}], "Attachments/Places/"),
         ([{**JOB, "half": True}], "boolean"),
@@ -236,3 +235,8 @@ def test_no_generator_starts_once_stopping(tmp_path: Path) -> None:
     h.stop()
     assert h._generator("x", timeout=5) == -1
     assert not marker.exists()
+
+
+def test_pin_label_true_is_accepted_now_that_venues_default_to_none() -> None:
+    assert validate_jobs([{**JOB, "pin_label": True}])[0]["pin_label"] is True
+

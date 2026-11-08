@@ -9,7 +9,7 @@ Obsidian vault and ran in its own sandbox. Differences from that copy:
   no site or personal details are baked in;
 - network access is urllib, not curl, and setup downloads the data tarballs
   over HTTPS itself instead of running npm or pip (the image has neither);
-- per-job overrides: `half` (alias `zoom`), `pin_label: false`, `region: true`;
+- per-job overrides: `half` (alias `zoom`), `pin_label`, `region: true`;
 - fixes: a pin at either pole, regions with no outline drawn at street scale, a
   neighbouring place labelled at the pin, contested-area subtitles;
 - Wikipedia is asked at most until it throttles once per batch, and the result
@@ -33,7 +33,7 @@ jobs.json: list of {"name", "lat", "lng", "icon" (book|newspaper|podcast|video),
   "query" (Nominatim search text for the place's outline, or null),
   "parent" (Nominatim search text for the parent place, or null),
   optional: "subtitle", "aliases" (list), "half"/"zoom" (view half-height in degrees),
-  "pin_label" (false: no place label at the pin), "region" (true: frame as a region)}
+  "pin_label" (false: no town label at the pin; true: one even for a venue), "region" (true: frame as a region)}
 Writes OUTDIR/<index>.svg and prints one JSON line per job, in order:
   {index, name, bytes, subtitle, pin_label, outline, lens, landmarks, secs, ...} or {index, name, error}.
 Output aims at ~32 KB per SVG (coarser simplification on retry) and may exceed it.
@@ -811,6 +811,35 @@ def contains_pin(rec, lat, lng):
     return g is not None and g.buffer(0.002).contains(Point(lng, lat))
 
 
+# Places smaller than a town: labelling their pin with the surrounding city named the wrong thing
+# (the Harlem YMCA pin read "New York", Ybor City's "Tampa", Zürich Hauptbahnhof's "Zurich").
+SMALL_CLASSES = {"amenity", "building", "shop", "tourism", "leisure", "historic", "railway", "aeroway", "highway",
+                 "office", "man_made", "craft", "emergency", "healthcare", "public_transport", "club", "military",
+                 "sport", "bridge", "aerialway"}
+SMALL_PLACES = {"suburb", "quarter", "neighbourhood", "city_block", "square", "village", "hamlet",
+                "isolated_dwelling", "farm", "plot", "allotments", "road"}
+# What a name says the place is, when Nominatim's answer can't be trusted to: a venue, building or street.
+VENUE = re.compile(r"\b(airport|aerodrome|airfield|station|bahnhof|hauptbahnhof|terminal|museum|gallery|church|"
+                   r"cathedral|chapel|basilica|abbey|monastery|convent|mosque|synagogue|temple|shrine|ymca|ywca|hotel|"
+                   r"inn|stadium|arena|university|college|school|academy|hospital|library|theatre|theater|cinema|"
+                   r"opera|castle|palace|fort|fortress|tower|bridge|lighthouse|street|avenue|boulevard|road|lane|"
+                   r"square|plaza|zoo|cemetery|prison|factory|mill|brewery|market|hall|house|building|centre|center|"
+                   r"club|pub|bar|cafe|restaurant|shop|store|office|embassy|port|harbour|harbor|pier|dock|campus)\b", re.I)
+def venue_text(job):
+    """The job's own words for the place: its name and the first part of its outline query."""
+    return " ".join([job.get("name") or "", (job.get("query") or "").split(",")[0]])
+
+
+def smaller_than_town(rec, job):
+    """A building, venue, street, neighbourhood or village: no surrounding-city label at its pin."""
+    if VENUE.search(venue_text(job)):
+        return True
+    if not rec:
+        return False
+    c, t = rec.get("class"), rec.get("type")
+    return c in SMALL_CLASSES or (c == "place" and t in SMALL_PLACES) or rec.get("addresstype") in SMALL_PLACES
+
+
 def area_name(lat, lng):
     """Country or sea under the pin, from Natural Earth: the subtitle when reverse geocoding finds nothing."""
     pt = Point(lng, lat)
@@ -989,7 +1018,9 @@ def make(job, outdir, lite=0):
     # labels, by priority
     Lb = []
     town = None
-    if not settlement and not regional and job.get("pin_label", True) is not False and not contested(lat, lng):
+    want = job.get("pin_label")
+    want = not smaller_than_town(rec, job) if want is None else want is not False
+    if not settlement and not regional and want and not contested(lat, lng):
         rv = reverse(round(lat, 4), round(lng, 4), 10) or {}
         a = rv.get("address", {})
         town = a.get("city") or a.get("town") or a.get("village")
