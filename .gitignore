@@ -12,3 +12,9 @@ quartz/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Handoff session logs and the next-session prompt hold private infrastructure
+# details (hosts, paths, alert IDs). Only the scrubbed TASKS.md register is
+# committed. This repo is public.
+.claude/handoff/HANDOFF-*.md
+.claude/handoff/NEXT-SESSION-PROMPT.md
