@@ -825,6 +825,12 @@ VENUE = re.compile(r"\b(airport|aerodrome|airfield|station|bahnhof|hauptbahnhof|
                    r"opera|castle|palace|fort|fortress|tower|bridge|lighthouse|street|avenue|boulevard|road|lane|"
                    r"square|plaza|zoo|cemetery|prison|factory|mill|brewery|market|hall|house|building|centre|center|"
                    r"club|pub|bar|cafe|restaurant|shop|store|office|embassy|port|harbour|harbor|pier|dock|campus)\b", re.I)
+# Admin units below city level, which reverse geocoding often puts where a city belongs.
+SUBCITY = re.compile(r"\b(district|subdistrict|upazila|tehsil|taluka?|block|council|ward|municipality|municipal|"
+                     r"county|parish|okres|raion|rayon|arrondissement|commune|borough|township|sub-?division)\b"
+                     r"|-(?:I|II|III|IV|V|VI)$", re.I)
+
+
 def venue_text(job):
     """The job's own words for the place: its name and the first part of its outline query."""
     return " ".join([job.get("name") or "", (job.get("query") or "").split(",")[0]])
@@ -1078,9 +1084,17 @@ def make(job, outdir, lite=0):
         sub = (job.get("parent") or "").split(",")[0].strip() or (f"near {near}" if near and norm(near) != norm(name) else "")
     if not sub:
         ra = (reverse(round(lat, 4), round(lng, 4), 10) or {}).get("address", {})
-        loc = ra.get("city") or ra.get("town") or ra.get("village") or ra.get("municipality") or ra.get("county")
-        st, ctry = ra.get("state"), ra.get("country")
-        parts = [st] if settlement else [loc if loc and norm(loc) != norm(name) else st]
+        own = norm(name)
+        def fresh(v):   # not the place itself, nor its own admin area ("Kandahar Province" for Kandahar)
+            return v and norm(v) != own and not norm(v).startswith(own + " ")
+        loc = next((v for v in (ra.get("city"), ra.get("town"), ra.get("village")) if fresh(v) and not SUBCITY.search(v)), None)
+        # The first region-level unit present (Japan has provinces, Czechia regions); none when it is the place's
+        # own area, and none for a region at state level or above (Tōhoku is not "Iwate Prefecture").
+        st = next((v for v in (ra.get("state"), ra.get("province"), ra.get("region")) if v), None)
+        if not fresh(st) or (regional and (rank <= 8 or (rec or {}).get("addresstype") in (
+                "region", "state", "province", "country", "continent", "archipelago"))): st = None
+        ctry = ra.get("country")
+        parts = [st] if settlement or regional else [loc or st]
         if ctry in ("United States", "United Kingdom") and not settlement and parts[0] != st: parts.append(st)
         elif ctry: parts.append(ctry)
         parts = [p for p in dict.fromkeys(parts) if p and norm(p) != norm(name)]
