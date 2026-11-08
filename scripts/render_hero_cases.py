@@ -46,6 +46,9 @@ ANTIMERIDIAN_CASES = [
     dict(slug="mcmurdo-h4", name="McMurdo Station", lat=-77.85, lng=166.67, query="McMurdo Station", half=4),
     dict(slug="mcmurdo-h12", name="McMurdo Station", lat=-77.85, lng=166.67, query="McMurdo Station", half=12),
     dict(slug="north-pole", name="North Pole", lat=90, lng=0),
+    # Non-regional views at half > 4.3 get a world-scale inset (half 7x the view): it must stay one world wide.
+    dict(slug="point-nemo", name="Point Nemo", lat=-48.8767, lng=-123.3933, query="Point Nemo", half=8),
+    dict(slug="south-pacific-gyre", name="South Pacific Gyre", lat=-48.8767, lng=-123.3933, query="South Pacific Gyre", half=20),
     dict(slug="south-pole", name="Amundsen–Scott South Pole Station", lat=-90, lng=0),
     dict(slug="freiburg", name="Freiburg im Breisgau", lat=47.995, lng=7.85, query="Freiburg im Breisgau"),
     dict(slug="zavodovski", name="Zavodovski Island", lat=-56.3, lng=-27.57, query="Zavodovski Island"),

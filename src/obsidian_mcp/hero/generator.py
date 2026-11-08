@@ -765,18 +765,27 @@ def landmarks(P, view, boxes, excl, wl, maxn=9):
 def inset(lat, lng, x, y, w, h, half_r, main_view, guess_hl):
     P2 = Proj(lat, lng, half_r, x + w / 2, y + h / 2, h / 2)
     v2 = P2.view(w / 2 + 4, h / 2 + 4)
-    t = 2.4
+    x0, y0, x1, y1 = v2.bounds
+    if x1 - x0 > 360:   # a world-scale inset is wider than the world: one copy, centred on the pin
+        v2 = box(lng - 180, y0, lng + 180, y1)
+    world = half_r > 30
+    # A world-scale inset is a thumbnail: land and borders only (one path), at the retry tolerance.
+    t = max(4.0, TOL[0]) if world else 2.4
     S = [f'<rect class="ps" x="{x}" y="{y}" width="{w}" height="{h}"/>']
     for g in land(v2): S.append(f'<path class="ld" d="{d_of(g, P2, v2, tol=t)}"/>')
-    for g, p in qv("regions", v2):
+    for g, p in ([] if world else qv("regions", v2)):
         c = (p.get("c") or "").lower()
         cls = "ds" if c == "desert" else "mt" if c in ("range/mtn", "foothills", "plateau") else None
         if cls: S.append(f'<path class="{cls}" d="{d_of(g, P2, v2, tol=t*2)}"/>')
-    for g, p in qv("lakes", v2):
+    for g, p in ([] if world else qv("lakes", v2)):
         if p["r"] <= 7: S.append(f'<path class="lk" d="{d_of(g, P2, v2, tol=t)}"/>')
-    for g, p in qv("rivers", v2):
+    for g, p in ([] if world else qv("rivers", v2)):
         if p["r"] <= 7: S.append(f'<path class="rv" stroke-width="1.2" d="{d_of(g, P2, v2, False, tol=t)}"/>')
-    for g, _ in qv("adm0", v2): S.append(f'<path class="b0" d="{d_of(g, P2, v2, False, tol=t)}"/>')
+    if world:
+        b0 = "".join(d_of(g, P2, v2, False, tol=t) for g, _ in qv("adm0", v2))
+        if b0: S.append(f'<path class="b0" d="{b0}"/>')
+    else:
+        for g, _ in qv("adm0", v2): S.append(f'<path class="b0" d="{d_of(g, P2, v2, False, tol=t)}"/>')
     b = main_view.bounds
     (ax, ay), (bx, by) = P2(b[0], b[3]), P2(b[2], b[1])
     if abs(bx - ax) > 6:
