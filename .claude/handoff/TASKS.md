@@ -9,7 +9,7 @@ Started 2026-11-01 with tasks moved from the
 deploys this server; each row names its old ID there. Code work for this server is tracked
 here; hosting it (compose, Tailscale, secrets on the box) stays in home-media-server.
 
-**Next ID: T-006**
+**Next ID: T-007**
 
 ---
 
@@ -28,6 +28,7 @@ None set. Pick from the register.
 | T-003 | blocked | Local (stdio) mode + Fly.io template | **Deferred by Jason 2026-09-26** ("skip that for now"). Serverless (Vercel, Lambda, Workers) doesn't fit either server as built: anki-mcp needs a persistent disk, a single writer and Anki's Rust-backed Python library; obsidian-mcp needs the vault on disk. The easiest paths for others: (1) stdio mode for Claude Desktop (a few lines each: both build an `MCPServer` and serve `streamable_http_app()`; stdio would serve the same server over stdio, and skips OAuth); (2) a Fly.io/Railway template with one volume and max 1 instance. A Workers version of obsidian-mcp would need a storage-API redesign; revisit during the TypeScript port. Applies to anki-mcp and obsidian-mcp. (Was home-media-server T-054.) |
 | T-004 | open | Publish the hero link-preview re-renders | #14 (2026-11-01) fixed black hero PNGs: resvg ignores CSS `var()`, so every v2 hero's preview rendered black; `RENDER_VERSION` 2 forces a re-render. A dry run on 2026-11-01 ~19:00Z staged **983 PNG updates** (renders cached) but also 15 `missing` hero SVGs and 14 PNG removals, because the map routine was mid-run, deleting and re-uploading heroes. **Next:** when the routine's `run_lock` in `Places/_Map Scan Progress.md` is clear, run `publish_site` (dry run): expect ~983 PNG updates and `changes.attachments.missing_count` 0: the Airstream factory and Auschwitz heroes were remade through `commit_heroes` (audit log, first entry 2026-11-01 20:18Z). `changes.attachments.missing_count` is the length of `changes.attachments.missing`, so any nonzero count is a published note referencing an absent file: a real problem. Then publish with the owner's OK. Live call takes minutes; the first run on 2026-11-01 lost its MCP transport mid-call, and the rerun answered from cache. |
 | T-005 | done | Map routine adopts the hero tools | #15/#16 (deployed 2026-11-01, 7e4785e) added `start_hero_job` / `hero_job_status` / `get_hero` / `commit_heroes`; smoke test on the server: one hero in 13.8 s, contact sheet through the connector. **Owner:** paste the tool reference (in the 2026-11-01 handoff log) into a Claude Desktop chat with the scheduled task and give it OK to update its instructions. **Verify:** next run's progress note mentions start_hero_job/commit_heroes rather than "Dropbox delete + create_file", and the server audit log has `commit_heroes` entries. Known: Amazon rainforest needs `region: true` (Nominatim doesn't classify it as a region). **Done 2026-11-02:** the routine has used the hero tools for several runs (progress note: "Heroes via the server tools (start_hero_job / hero_job_status / commit_heroes with set_image)"; Airstream factory and Auschwitz remade), and the box's `/state/audit.log` has 2,479 `commit_heroes` entries (2026-11-01 20:18Z → 2026-11-02 20:54Z). |
+| T-006 | in-progress | Grafana MCP alert noise + Funnel drops (work lives in home-media-server) | Raised 2026-11-06 by Jason ("continuing to get emails about grafana alerts for the mcps"). Code and register for this live in **home-media-server** (T-124, T-136 there); this row only tracks the follow-up from this directory. **Done:** hms #176 merged + deployed 2026-11-06 (`MCP not functioning` pages only on 15 min of all-bad runs, >= 4 runs; `failStreakToRestart` 2->5; live). Root cause found: Funnel ingress nodes are DERP-only, and drops followed each node's home-DERP flips (fra/ams/nue). A/B: pinned ynab 1/17,052 failed probes vs ~60 for each control. All three nodes pinned to fra live on 2026-11-08 05:24Z (in memory only). **Open:** hms PR #181 (watchdog re-pins after any tailscaled restart; host via tailscale operator set to the checkout owner, already set on the box; unit sandboxed with NoNewPrivileges; new warning rule `MCP relay not pinned`, already live). Both Copilot threads fixed (`34eeefc`, `fd6a578`) and resolved. **Next:** Jason merges #181 -> confirm auto-deploy `ok` line, `install.sh` ran, `systemd-analyze security mcp-watchdog` improved, records show `pin=ok`. Then a week of watchdog data with near-zero non-ok runs closes hms T-124. **2026-11-08 08:13 CET: #181 deployed** (merge `76bfdd8`, rolled out with `654c7fd`: `ok 654c7fd … ran mcp-watchdog, rip-postprocess installers`). Installed unit has the sandbox; `systemd-analyze security` 9.2 → 7.5; operator set; Loki shows `pin=ok relay=fra` for all three (8 runs each in 20 min); timer active, last run Result=success. Only the week-long check remains. |
 
 ---
 
@@ -44,6 +45,8 @@ None set. Pick from the register.
   "Automatically clean orphaned media" (off by default; it also skips itself when more than
   80% of media look orphaned). So: leave that setting off and don't bulk-delete Unlinked media.
 
+- **MCP Funnel drops = home-DERP flips (2026-11-07).** Funnel ingress nodes have no endpoints, so all Funnel traffic is DERP-relayed to the node's home region. `tailscale debug force-prefer-derp 4` pins fra but lives in tailscaled memory only: any restart, recreate or reboot clears it. The host tailscaled needs operator (or root) for debug commands. See home-media-server T-124.
+
 ---
 
 ## ⚠️ False premises and method traps
@@ -55,9 +58,13 @@ None set. Pick from the register.
   you keep ignored (`.git/info/exclude`) overwrites the ignored copy without warning. That
   is how a session-local register at this file's path was lost on 2026-11-01. Never keep
   durable state at a path the repo might later track.
+- **Wrong:** the MCP Funnel drops affect only obsidian, look like 'TCP accepted, no TLS', and come from the sidecar or netstack. **Actually:** all three MCPs drop (anki on host tailscaled too), most failed probes never complete TCP, and the cause is home-DERP flips. *(verified 2026-11-07 by journal analysis and an A/B pin)*
+- **Wrong:** restarting a Tailscale sidecar heals a Funnel drop. **Actually:** restarted episodes lasted as long as unrestarted ones (median 4.3 vs 4.0 min) and 11 of 21 ended 'still failing', which was what paged. *(verified 2026-11-06)*
+- **zsh:** `S="ssh -o ..."; $S cmd` fails with 'command not found' (no word-splitting); write the ssh command out. A `cat > file` with no input in a compound command hangs until timeout.
 
 ---
 
 ## 🗓️ Time-bound checks
 
-- None.
+- ✅ **T-006: home-media-server PR #181 deployed** — done 2026-11-08 08:13 CET, all checks passed (see the T-006 row).
+- **T-006: close home-media-server T-124** — not before 2026-11-15 (a week after pinning). Count non-ok watchdog runs per MCP since 2026-11-08 05:24Z; expect near zero, with `pin` never `failed`.
