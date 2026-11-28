@@ -5,7 +5,7 @@
 # Pinned by digest. Renovate proposes digest updates weekly: the shared preset
 # (JasonSooter/renovate-config) pins and groups them, and renovate.json holds
 # this image on Python 3.14.
-FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+FROM python:3.14-slim@sha256:f57c4c23b985d95deea5bc5249e2f9c8a512b4cc9d5d3fd31900cbd2f5f0a604
 
 # No Node. Optional Quartz publishing assumes the site builds on its host
 # (Vercel, Netlify, GitHub Pages...) when pushed, so building it here would only
@@ -18,7 +18,7 @@ FROM python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6
 # push rather than before it, and reports it on the deployment.
 
 # Pinned by digest: a moving tag would silently change the builder.
-COPY --from=ghcr.io/astral-sh/uv:0.9.5@sha256:f459f6f73a8c4ef5d69f4e6fbbdb8af751d6fa40ec34b39a1ab469acd6e289b7 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.10@sha256:a3ea1357342c1a4bf9a0c53a3deb1b55379aefa037338d8113d5771efa01774f /uv /bin/uv
 
 # ripgrep backs search. git and openssh-client back Quartz publishing
 # (staging content, committing, and pushing to the site repo).
